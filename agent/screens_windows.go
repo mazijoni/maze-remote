@@ -115,10 +115,11 @@ func fixFor(ffmpeg string, s Screen) string {
 		return ""
 	}
 	// For DXGI_MODE_ROTATION_ROTATE90 the duplicated texture holds the desktop
-	// turned 90° clockwise, so it is turned back counter-clockwise (and vice versa).
-	fix := "transpose=cclock"
+	// turned 90° counter-clockwise, so it is turned back clockwise (and vice versa).
+	// (Confirmed on a real portrait monitor: the other way round comes out upside down.)
+	fix := "transpose=clock"
 	if s.Rotation == 270 {
-		fix = "transpose=clock"
+		fix = "transpose=cclock"
 	}
 	key := fmt.Sprintf("%d:%d:%dx%d", s.Index, s.Rotation, s.W, s.H)
 	probeMu.Lock()

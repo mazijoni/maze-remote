@@ -78,6 +78,17 @@ Open `http://<pi-ip>:8080` and sign in with `MR_PASSWORD`.
 
 Other flags: `-test` streams a test pattern (two fake screens) and only logs input.
 
+### Add the Raspberry Pi itself
+
+The Pi can show up as a machine too. On the Pi (64-bit Raspberry Pi OS with desktop):
+
+```bash
+cd ~/maze-remote && git pull
+bash scripts/pi-agent.sh
+```
+
+It installs ffmpeg and xdotool, downloads the ARM agent, reads the host secret from the server's `.env`, and starts the agent with the desktop. Screen capture needs an **X11** desktop; if the Pi uses Wayland (the default), the script tells you how to switch (`sudo raspi-config nonint do_wayland W1`, then reboot). The Pi 5 has no hardware H.264 encoder, so it streams with x264 at 30 fps.
+
 ### 3. Using it from outside your home
 
 The easiest secure option is **[Tailscale](https://tailscale.com)** on the Pi, the PC and your phone/laptop — then use the Pi's Tailscale address. For HTTPS (needed for clipboard and keyboard-lock features), run `sudo tailscale serve --bg 8080` on the Pi and open the `https://…ts.net` URL it prints.
