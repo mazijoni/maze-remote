@@ -89,11 +89,33 @@ bash scripts/pi-agent.sh
 
 It installs ffmpeg and xdotool, downloads the ARM agent, reads the host secret from the server's `.env`, and starts the agent with the desktop. Screen capture needs an **X11** desktop; if the Pi uses Wayland (the default), the script tells you how to switch (`sudo raspi-config nonint do_wayland W1`, then reboot). The Pi 5 has no hardware H.264 encoder, so it streams with x264 at 30 fps.
 
-### 3. Using it from outside your home
+### 3. Access from anywhere (remote.maze-development.com)
 
-The easiest secure option is **[Tailscale](https://tailscale.com)** on the Pi, the PC and your phone/laptop — then use the Pi's Tailscale address. For HTTPS (needed for clipboard and keyboard-lock features), run `sudo tailscale serve --bg 8080` on the Pi and open the `https://…ts.net` URL it prints.
+**Website + signaling — Cloudflare Tunnel.** Gives the Pi a public HTTPS address without opening any ports on your router. Your domain's DNS must be on Cloudflare.
 
-If a direct connection can't be made (strict networks), add a TURN server on the Pi (`sudo apt install coturn`) and set `MR_ICE=stun:stun.l.google.com:19302,turn:user:pass@your-pi:3478` in `.env`.
+1. Cloudflare dashboard → **Zero Trust → Networks → Tunnels → Create a tunnel** → *Cloudflared* → name it `maze-remote`.
+2. Pick **Debian / arm64** and run the install command it shows on the Pi (it installs `cloudflared` as a service).
+3. **Public hostname:** subdomain `remote`, domain `maze-development.com`, service `HTTP` → `localhost:8080`.
+
+The site is now at `https://remote.maze-development.com`. Point agents on other networks at `wss://remote.maze-development.com/ws` (the agent running on the Pi itself can stay on `ws://127.0.0.1:8080/ws`).
+
+**Video between different networks — Cloudflare TURN.** Most connections go directly peer-to-peer, but mobile data and strict Wi-Fi often can't. A TURN relay fixes that (1,000 GB/month free, then $0.05/GB).
+
+1. Cloudflare dashboard → **Realtime → TURN Server → Create** → copy the **Key ID** and **API token**.
+2. Add them to `server/.env` on the Pi and restart:
+
+```bash
+MR_CF_TURN_KEY_ID=...
+MR_CF_TURN_TOKEN=...
+```
+
+```bash
+sudo systemctl restart maze-remote && journalctl -u maze-remote -n 5 --no-pager
+```
+
+The log should say `TURN relay: Cloudflare`. The server mints short-lived credentials and hands them to browsers and agents for every session; the session info panel shows **Relayed (TURN)** when the relay is in use.
+
+Since the site is now public, use a long password. Login attempts are rate-limited per visitor (the real IP is taken from Cloudflare's `CF-Connecting-IP` header).
 
 ## About the GitHub Pages site
 

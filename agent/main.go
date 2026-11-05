@@ -253,6 +253,9 @@ func (a *Agent) onSignal(m wsMsg) {
 		return
 	}
 	if d.SDP != nil && d.SDP.Type == webrtc.SDPTypeOffer {
+		if len(m.ICE) > 0 {
+			a.ice = toICE(m.ICE) // fresh relay credentials from the server
+		}
 		a.closeSession("replaced by new viewer")
 		if err := a.startSession(m.From, m.Sid, *d.SDP); err != nil {
 			log.Printf("session failed: %v", err)

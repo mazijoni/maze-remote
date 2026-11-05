@@ -27,7 +27,42 @@ if (!PASSWORD || !HOST_SECRET) {
   process.exit(1);
 }
 
+// Optional Cloudflare TURN relay, for when browser and PC are on networks that
+// can't reach each other directly (mobile data, strict Wi-Fi). Credentials are
+// short-lived, so we mint them from the Cloudflare API and refresh them.
+const CF_TURN_KEY_ID = process.env.MR_CF_TURN_KEY_ID || "";
+const CF_TURN_TOKEN = process.env.MR_CF_TURN_TOKEN || "";
+const TURN_TTL = 24 * 3600;
+let turnCache = { servers: null, until: 0 };
+
+async function refreshTurn() {
+  if (!CF_TURN_KEY_ID || !CF_TURN_TOKEN) return;
+  try {
+    const r = await fetch(`https://rtc.live.cloudflare.com/v1/turn/keys/${CF_TURN_KEY_ID}/credentials/generate-ice-servers`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${CF_TURN_TOKEN}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ ttl: TURN_TTL }),
+    });
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const j = await r.json();
+    // port 53 URLs are blocked by browsers and only cause timeouts
+    const servers = (j.iceServers || []).map((s) => ({ ...s, urls: [].concat(s.urls).filter((u) => !/:53(\?|$)/.test(u)) }))
+      .filter((s) => s.urls.length);
+    turnCache = { servers, until: Date.now() + (TURN_TTL / 2) * 1000 };
+    console.log(`[turn] got ${servers.length} Cloudflare ICE server entries`);
+  } catch (e) {
+    console.error("[turn] could not get Cloudflare TURN credentials:", e.message);
+  }
+}
+if (CF_TURN_KEY_ID) {
+  refreshTurn();
+  setInterval(() => { if (Date.now() > turnCache.until) refreshTurn(); }, 10 * 60_000);
+}
+
 function iceServers() {
+  if (turnCache.servers && turnCache.servers.length) {
+    return [{ urls: "stun:stun.l.google.com:19302" }, ...turnCache.servers];
+  }
   return ICE.map((u) => {
     // turn:user:pass@host:port -> {urls, username, credential}
     const m = u.match(/^(turns?):([^:@]+):([^@]+)@(.+)$/);
@@ -72,6 +107,14 @@ function noteFailure(ip) {
 }
 
 // ---------- http ----------
+// Behind Cloudflare Tunnel every request comes from cloudflared on localhost,
+// so trust Cloudflare's header for the real visitor IP (used by the rate limit).
+function clientIp(req) {
+  const peer = req.socket.remoteAddress || "";
+  const local = peer === "127.0.0.1" || peer === "::1" || peer === "::ffff:127.0.0.1";
+  return (local && req.headers["cf-connecting-ip"]) || peer;
+}
+
 const MIME = {
   ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8",
   ".css": "text/css; charset=utf-8", ".svg": "image/svg+xml", ".png": "image/png",
@@ -92,7 +135,7 @@ function json(res, code, body) {
 
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, "http://x");
-  const ip = req.socket.remoteAddress;
+  const ip = clientIp(req);
 
   if (req.method === "OPTIONS") { cors(res); res.writeHead(204); return res.end(); }
 
@@ -191,7 +234,9 @@ wss.on("connection", (ws, req) => {
         h.session = { client: ws.id, sid: msg.sid };
         broadcastHosts();
       }
-      send(h.ws, { type: "signal", from: ws.id, sid: msg.sid, data: msg.data });
+      const fwd = { type: "signal", from: ws.id, sid: msg.sid, data: msg.data };
+      if (msg.data && msg.data.sdp && msg.data.sdp.type === "offer") fwd.ice = iceServers();
+      send(h.ws, fwd);
       return;
     }
     if (ws.role === "client" && msg.type === "bye") {
@@ -250,4 +295,5 @@ setInterval(() => {
 server.listen(PORT, () => {
   console.log(`Maze Remote server on http://0.0.0.0:${PORT}`);
   console.log(`Serving web client from ${WEB_DIR}`);
+  console.log(CF_TURN_KEY_ID ? "TURN relay: Cloudflare" : "TURN relay: none (set MR_CF_TURN_KEY_ID + MR_CF_TURN_TOKEN for other networks)");
 });
