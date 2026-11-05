@@ -56,12 +56,14 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-width:
 .mt { margin-top: 24px; }
 
 /* ---------- glow orbs (from maze-development.com) ---------- */
+/* Soft radial gradients instead of filter: blur() — looks the same, costs almost nothing on phones */
 .glow {
   position: fixed; border-radius: 50%; pointer-events: none; z-index: 0;
-  filter: blur(110px); opacity: 0.55;
+  will-change: transform;
 }
-.glow-a { width: 520px; height: 520px; background: var(--accent); top: -180px; right: -120px; animation: float 16s ease-in-out infinite; }
-.glow-b { width: 420px; height: 420px; background: #5b1aa8; bottom: -200px; left: -140px; opacity: 0.45; animation: float 20s ease-in-out infinite reverse; }
+.glow-a { width: 1100px; height: 1100px; top: -620px; right: -560px; background: radial-gradient(closest-side, rgba(162,53,255,.55), rgba(162,53,255,.18) 55%, transparent); animation: float 16s ease-in-out infinite; }
+.glow-b { width: 900px; height: 900px; bottom: -560px; left: -520px; background: radial-gradient(closest-side, rgba(91,26,168,.5), rgba(91,26,168,.15) 55%, transparent); animation: float 20s ease-in-out infinite reverse; }
+body.in-session .glow { display: none; }
 @keyframes float {
   0%, 100% { transform: translate(0, 0) scale(1); }
   50% { transform: translate(-40px, 30px) scale(1.08); }
@@ -218,9 +220,9 @@ input:focus, textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 4px
   position: fixed; inset: 0; z-index: 50; background: #000; overflow: hidden;
   transform-origin: top left;
 }
-.stage { position: absolute; inset: 0; display: grid; place-items: center; outline: none; cursor: none; }
+.stage { position: absolute; inset: 0; display: grid; place-items: center; outline: none; cursor: none; touch-action: none; }
 .stage.no-cursor-hide { cursor: default; }
-.stage video { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; }
+.stage video, .stage .demo-canvas { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; touch-action: none; }
 .stage-overlay {
   position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 16px;
   background: radial-gradient(60% 60% at 50% 40%, rgba(162,53,255,.25), transparent 70%), var(--bg-deep);

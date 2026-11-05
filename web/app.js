@@ -340,6 +340,7 @@ async function startSession(host, card) {
   $("#keys-pop").hidden = true;
   sessEl.hidden = false;
   document.body.style.overflow = "hidden";
+  document.body.classList.add("in-session");
 
   const from = cardClip(card);
   const anim = from
@@ -374,6 +375,7 @@ async function endSession(reason) {
   sessEl.getAnimations().forEach((a) => a.cancel());
   video.srcObject = null;
   document.body.style.overflow = "";
+  document.body.classList.remove("in-session");
   if (reason) toast(reason, reason.startsWith("Disconnected") ? "" : "bad");
   if (card) { card.classList.remove("enter"); void card.offsetWidth; card.classList.add("enter"); card.style.animationDelay = "0ms"; }
 }
@@ -479,8 +481,9 @@ function updateInfo(obj) {
 // ---------------- input ----------------
 function contentRect() {
   // where the picture actually is inside the <video> (object-fit: contain letterboxing)
-  const r = video.getBoundingClientRect();
-  const vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+  const el = session && session.canvas ? session.canvas : video;
+  const r = el.getBoundingClientRect();
+  const vw = el.videoWidth || el.width || 16, vh = el.videoHeight || el.height || 9;
   const scale = Math.min(r.width / vw, r.height / vh);
   const w = vw * scale, h = vh * scale;
   return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w, h };
@@ -645,30 +648,35 @@ class DemoSession {
     this.log = ["online as \"" + host.name + "\"", "viewer connecting (session demo)", "peer connection: connected", "▶ streaming to viewer"];
   }
   start() {
+    // Draw straight onto a canvas in the stage (no video encode/decode round-trip),
+    // with everything static pre-rendered once, and only repaint when something changes.
     const c = (this.canvas = document.createElement("canvas"));
     c.width = 1600; c.height = 900;
-    this.ctx = c.getContext("2d");
-    this.draw();
-    const stream = c.captureStream(60);
-    setTimeout(() => {
-      if (session !== this) return;
-      video.srcObject = stream;
-      video.play().catch(() => {});
-    }, 900);
+    c.className = "demo-canvas";
+    this.ctx = c.getContext("2d", { alpha: false });
+    this.bg = this.renderStatic();
+    this.dirty = true;
+    video.hidden = true;
+    stage.prepend(c);
+    setTimeout(() => { if (session === this) onVideoReady(); }, 700);
     this.raf = requestAnimationFrame(this.loop);
+    this.blink = setInterval(() => { this.dirty = true; }, 500);
     this.statsTimer = setInterval(() => {
       const fps = 58 + Math.round(Math.random() * 2), mbps = (3.5 + Math.random() * 1.5).toFixed(1), ms = 2 + Math.round(Math.random() * 3);
       $("#sess-stats").textContent = `${fps} fps · ${mbps} Mbps · ${ms} ms`;
       updateInfo({ Host: this.host.name, OS: this.host.os, Agent: "v0.1.0 (demo)", Encoder: "x264", Codec: "H264", Resolution: "1600×900", Framerate: fps + " fps", Bitrate: mbps + " Mbps", Latency: ms + " ms", Route: "Direct (peer-to-peer)" });
     }, 1000);
   }
-  loop = () => { this.draw(); this.raf = requestAnimationFrame(this.loop); };
+  loop = () => {
+    if (this.dirty || this.ripples.length) { this.dirty = false; this.draw(); }
+    this.raf = requestAnimationFrame(this.loop);
+  };
   onSignal() {}
   send(ev) {
+    this.dirty = true;
     if (ev.t === "mm") Object.assign(this.cursor, { x: ev.x, y: ev.y });
     else if (ev.t === "md") { this.down = true; this.cursor.x = ev.x ?? this.cursor.x; this.cursor.y = ev.y ?? this.cursor.y; this.ripples.push({ x: this.cursor.x, y: this.cursor.y, t: performance.now(), b: ev.b }); }
     else if (ev.t === "mu") this.down = false;
-    else if (ev.t === "wh") this.scroll = Math.max(0, this.scroll + ev.dy * 0.4);
     else if (ev.t === "kd") {
       const c = ev.c;
       if (c === "Backspace") this.typed = this.typed.slice(0, -1);
@@ -678,52 +686,63 @@ class DemoSession {
       else if (c.startsWith("Digit")) this.typed += c[5];
       else if (c === "Period") this.typed += ".";
       else if (c === "Comma") this.typed += ",";
-      else this.log.push("key " + c);
+      else if (!/^(Shift|Control|Alt|Meta)/.test(c)) this.log.push("key " + c);
       if (this.typed.length > 400) this.typed = this.typed.slice(-400);
     } else if (ev.t === "text") this.typed += ev.s;
   }
-  stop() { cancelAnimationFrame(this.raf); clearInterval(this.statsTimer); }
+  stop() {
+    cancelAnimationFrame(this.raf); clearInterval(this.statsTimer); clearInterval(this.blink);
+    setTimeout(() => { this.canvas.remove(); video.hidden = false; }, 600);
+  }
 
-  draw() {
-    const g = this.ctx, W = 1600, H = 900, t = (performance.now() - this.t0) / 1000;
-    // wallpaper
+  // Everything that never changes: wallpaper, watermark, window frames, taskbar.
+  renderStatic() {
+    const W = 1600, H = 900;
+    const c = document.createElement("canvas"); c.width = W; c.height = H;
+    const g = c.getContext("2d");
     g.fillStyle = "#0f0b15"; g.fillRect(0, 0, W, H);
     const orb = (x, y, r, col) => { const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, col); gr.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = gr; g.fillRect(0, 0, W, H); };
-    orb(1250 + Math.sin(t / 3) * 60, 180 + Math.cos(t / 4) * 40, 620, "rgba(162,53,255,0.55)");
-    orb(250 + Math.cos(t / 5) * 50, 780, 520, "rgba(91,26,168,0.5)");
-    // logo watermark
+    orb(1250, 180, 620, "rgba(162,53,255,0.55)");
+    orb(250, 780, 520, "rgba(91,26,168,0.5)");
     g.save(); g.globalAlpha = 0.18; g.translate(W / 2 - 160, H - 330); g.scale(2.6, 2.6);
     [[45,5,67,"#C773FF"],[31,19,79,"#fff"],[21,33,39,"#C773FF"],[42,33,89,"#fff"],[19,47,67,"#fff"],[70,47,89,"#C773FF"],[31,61,79,"#fff"],[43,75,65,"#C773FF"]]
-      .forEach(([a, y, b, c]) => { g.fillStyle = c; g.beginPath(); g.moveTo(a, y); g.lineTo(b, y); g.lineTo(b - 5, y + 10); g.lineTo(a - 5, y + 10); g.fill(); });
+      .forEach(([a, y, b, col]) => { g.fillStyle = col; g.beginPath(); g.moveTo(a, y); g.lineTo(b, y); g.lineTo(b - 5, y + 10); g.lineTo(a - 5, y + 10); g.fill(); });
     g.restore();
-
-    // window: notepad
-    this.win(g, 120, 90, 640, 380, "notes.txt — Notepad", (x, y, w, h) => {
-      g.fillStyle = "#e9e3f2"; g.font = "500 20px 'JetBrains Mono', monospace";
-      const text = (this.typed || "Click here and type — your keyboard\nreaches this demo PC.") + (Math.floor(t * 2) % 2 ? "▍" : "");
-      let ly = y + 34;
-      text.split("\n").slice(-12).forEach((line) => {
-        const chunks = line.match(/.{1,46}/g) || [""];
-        chunks.forEach((ch) => { g.fillText(ch, x + 20, ly); ly += 28; });
-      });
-    });
-    // window: agent console
-    this.win(g, 860, 150, 620, 330, "maze-remote-agent.exe", (x, y, w, h) => {
-      g.fillStyle = "#0b0810"; g.fillRect(x, y, w, h);
-      g.font = "500 17px 'JetBrains Mono', monospace";
-      this.log.slice(-9).forEach((l, i) => {
-        g.fillStyle = "#6b5f80"; g.fillText("13:0" + (i % 10) , x + 16, y + 32 + i * 30);
-        g.fillStyle = l.startsWith("▶") ? "#4ade80" : "#cfc6dc"; g.fillText(l, x + 86, y + 32 + i * 30);
-      });
-    });
-
-    // taskbar
+    this.winFrame(g, ...this.notepadRect, "notes.txt — Notepad", "#1e1729");
+    this.winFrame(g, ...this.consoleRect, "maze-remote-agent.exe", "#0b0810");
     g.fillStyle = "rgba(14,10,20,0.88)"; g.fillRect(0, H - 56, W, 56);
     g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(0, H - 56, W, 1);
     for (let i = 0; i < 6; i++) {
       g.fillStyle = i === 0 ? "#a235ff" : "rgba(255,255,255,0.12)";
       this.round(g, W / 2 - 165 + i * 56, H - 46, 36, 36, 9); g.fill();
     }
+    return c;
+  }
+  get notepadRect() { return [120, 90, 640, 380]; }
+  get consoleRect() { return [860, 150, 620, 330]; }
+
+  draw() {
+    const g = this.ctx, W = 1600, H = 900, t = (performance.now() - this.t0) / 1000;
+    g.drawImage(this.bg, 0, 0);
+
+    // notepad text
+    let [x, y] = this.notepadRect;
+    g.fillStyle = "#e9e3f2"; g.font = "500 20px 'JetBrains Mono', monospace";
+    const text = (this.typed || "Click here and type — your keyboard\nreaches this demo PC.") + (Math.floor(t * 2) % 2 ? "▍" : "");
+    let ly = y + 74;
+    const lines = [];
+    text.split("\n").forEach((line) => (line.match(/.{1,46}/g) || [""]).forEach((ch) => lines.push(ch)));
+    lines.slice(-11).forEach((ch) => { g.fillText(ch, x + 20, ly); ly += 28; });
+
+    // console text
+    [x, y] = this.consoleRect;
+    g.font = "500 17px 'JetBrains Mono', monospace";
+    this.log.slice(-9).forEach((l, i) => {
+      g.fillStyle = "#6b5f80"; g.fillText("13:0" + (i % 10), x + 16, y + 72 + i * 30);
+      g.fillStyle = l.startsWith("▶") ? "#4ade80" : "#cfc6dc"; g.fillText(l, x + 86, y + 72 + i * 30);
+    });
+
+    // clock
     const now = new Date();
     g.fillStyle = "#fff"; g.font = "600 17px Inter, sans-serif"; g.textAlign = "right";
     g.fillText(now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), W - 24, H - 30);
@@ -746,16 +765,15 @@ class DemoSession {
     g.fillStyle = "#fff"; g.fill(); g.strokeStyle = "#000"; g.lineWidth = 1.5; g.stroke(); g.restore();
   }
   round(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
-  win(g, x, y, w, h, title, body) {
+  winFrame(g, x, y, w, h, title, bodyColor) {
     g.save();
     g.shadowColor = "rgba(0,0,0,.55)"; g.shadowBlur = 40; g.shadowOffsetY = 18;
-    g.fillStyle = "#1e1729"; this.round(g, x, y, w, h, 14); g.fill();
+    g.fillStyle = bodyColor; this.round(g, x, y, w, h, 14); g.fill();
     g.restore();
     g.save(); this.round(g, x, y, w, h, 14); g.clip();
     g.fillStyle = "#261d34"; g.fillRect(x, y, w, 40);
     g.fillStyle = "#cfc6dc"; g.font = "600 15px Inter, sans-serif"; g.fillText(title, x + 16, y + 26);
     ["#ff5c7a", "#fbbf24", "#4ade80"].forEach((c, i) => { g.fillStyle = c; g.beginPath(); g.arc(x + w - 24 - i * 22, y + 20, 6, 0, Math.PI * 2); g.fill(); });
-    body(x, y + 40, w, h - 40);
     g.restore();
     g.strokeStyle = "rgba(255,255,255,.1)"; g.lineWidth = 1; this.round(g, x, y, w, h, 14); g.stroke();
   }
