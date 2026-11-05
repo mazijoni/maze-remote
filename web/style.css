@@ -455,3 +455,26 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 .link { color: var(--accent); border-bottom: 1px solid var(--accent-dim); transition: border-color .15s; }
 .link:hover { border-color: var(--accent); }
+
+/* ── SCREEN PICKER ────────────────────────────────────── */
+.tb-btn { position: relative; }
+.tb-badge {
+  position: absolute; right: 3px; bottom: 3px; min-width: 14px; height: 14px; padding: 0 3px;
+  font-family: var(--mono); font-size: 9.5px; line-height: 14px; text-align: center;
+  background: var(--accent); color: #0a0008;
+}
+.tb-badge:empty { display: none; }
+.screens-pop { min-width: 250px; }
+.menu-label { padding: 8px 10px 6px; font-size: 10px; }
+.menu-pop button .screen-dims { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--ink-dim); }
+.menu-pop button.current { color: var(--accent); }
+.menu-pop button.current .screen-dims { color: var(--accent); opacity: .7; }
+.screens-map { position: relative; height: 70px; margin: 6px 10px 8px; }
+.screens-map div {
+  position: absolute; border: 1px solid var(--line-2); background: var(--paper-2);
+  display: grid; place-items: center; font-family: var(--mono); font-size: 10px; color: var(--ink-mute);
+  cursor: pointer; transition: border-color .15s, color .15s, background .15s;
+}
+.screens-map div:hover { border-color: var(--ink-2); color: var(--ink); }
+.screens-map div.current { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+.screens-map.all div { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }

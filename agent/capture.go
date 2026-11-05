@@ -25,33 +25,69 @@ type Capture struct {
 	done chan struct{}
 }
 
-func ffmpegArgs(cfg Config) []string {
+// Largest picture we send. H.264 hardware encoders top out around 4096 wide,
+// and browsers decode 4K comfortably, so "All screens" is scaled to fit this.
+const maxW, maxH = 3840, 2160
+
+func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
 	fps := fmt.Sprint(cfg.FPS)
 	gop := fmt.Sprint(cfg.FPS * 2)
 	args := []string{"-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"}
+	fitScale := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", maxW, maxH)
 
-	// ---- input ----
+	// ---- all screens: one input per monitor, stitched by their desktop positions ----
+	if sel == AllScreens && len(ss) > 1 {
+		b := bounds(ss)
+		var graph, stack, layout string
+		for i, sc := range ss {
+			switch {
+			case cfg.Test:
+				src := []string{"testsrc2", "smptebars", "rgbtestsrc", "yuvtestsrc"}[i%4]
+				args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, sc.W, sc.H, fps))
+				graph += fmt.Sprintf("[%d:v]format=yuv420p[s%d];", i, i)
+			case runtime.GOOS == "windows":
+				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", sc.Index, fps))
+				graph += fmt.Sprintf("[%d:v]hwdownload,format=bgra,format=yuv420p[s%d];", i, i)
+			}
+			stack += fmt.Sprintf("[s%d]", i)
+			if i > 0 {
+				layout += "|"
+			}
+			layout += fmt.Sprintf("%d_%d", sc.X-b.X, sc.Y-b.Y)
+		}
+		graph += fmt.Sprintf("%sxstack=inputs=%d:layout=%s:fill=black,%s,format=yuv420p[out]", stack, len(ss), layout, fitScale)
+		args = append(args, "-filter_complex", graph, "-map", "[out]")
+		return append(args, encoderArgs(cfg, gop)...)
+	}
+
+	// ---- one screen ----
+	sc := target(ss, sel)
 	hw := false // frames stay on the GPU (d3d11) and go straight to a hardware encoder
 	switch {
 	case cfg.Test:
-		args = append(args, "-re", "-f", "lavfi", "-i", "testsrc2=size=1280x720:rate="+fps)
+		src := []string{"testsrc2", "smptebars"}[sc.Index%2]
+		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, sc.W, sc.H, fps))
 	case runtime.GOOS == "windows":
 		// Desktop Duplication API — fast, low-overhead, needs ffmpeg 6.0+
-		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", cfg.Monitor, fps))
-		hw = cfg.Encoder == "nvenc" || cfg.Encoder == "amf"
+		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", sc.Index, fps))
+		hw = (cfg.Encoder == "nvenc" || cfg.Encoder == "amf") && sc.W <= maxW && sc.H <= maxH
 	case runtime.GOOS == "darwin":
-		args = append(args, "-f", "avfoundation", "-framerate", fps, "-capture_cursor", "1", "-i", fmt.Sprintf("%d:none", cfg.Monitor+1))
+		args = append(args, "-f", "avfoundation", "-framerate", fps, "-capture_cursor", "1", "-i", fmt.Sprintf("%d:none", sc.Index+1))
 	default: // linux / X11
 		args = append(args, "-f", "x11grab", "-framerate", fps, "-draw_mouse", "1", "-i", displayName())
 	}
 
 	// ---- filters ----
 	if runtime.GOOS == "windows" && !cfg.Test && !hw {
-		args = append(args, "-vf", "hwdownload,format=bgra,format=yuv420p")
+		args = append(args, "-vf", "hwdownload,format=bgra,"+fitScale+",format=yuv420p")
 	} else if !hw {
-		args = append(args, "-pix_fmt", "yuv420p")
+		args = append(args, "-vf", fitScale+",format=yuv420p")
 	}
+	return append(args, encoderArgs(cfg, gop)...)
+}
 
+func encoderArgs(cfg Config, gop string) []string {
+	var args []string
 	// ---- encoder (no B-frames, short GOP, constant-ish bitrate — tuned for latency) ----
 	br := cfg.Bitrate
 	switch cfg.Encoder {
@@ -68,12 +104,11 @@ func ffmpegArgs(cfg Config) []string {
 		args = append(args, "-c:v", "libx264", "-preset", "ultrafast", "-tune", "zerolatency",
 			"-profile:v", "baseline", "-b:v", br, "-maxrate", br, "-bufsize", br)
 	}
-	args = append(args, "-g", gop, "-bf", "0", "-an", "-f", "h264", "-")
-	return args
+	return append(args, "-g", gop, "-bf", "0", "-an", "-f", "h264", "-")
 }
 
-func StartCapture(cfg Config, track *webrtc.TrackLocalStaticSample) (*Capture, error) {
-	args := ffmpegArgs(cfg)
+func StartCapture(cfg Config, ss []Screen, sel int, track *webrtc.TrackLocalStaticSample) (*Capture, error) {
+	args := ffmpegArgs(cfg, ss, sel)
 	cmd := exec.Command(cfg.FFmpeg, args...)
 	hideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()

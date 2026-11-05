@@ -72,7 +72,7 @@ func loadConfig() Config {
 	enc := flag.String("encoder", "", "x264 | nvenc | amf | qsv")
 	fps := flag.Int("fps", 0, "capture framerate")
 	br := flag.String("bitrate", "", "video bitrate, e.g. 8M")
-	mon := flag.Int("monitor", -1, "monitor index (0 = primary)")
+	mon := flag.Int("monitor", -2, "screen to show first: 0 = first screen, -1 = all screens")
 	ff := flag.String("ffmpeg", "", "path to ffmpeg")
 	test := flag.Bool("test", false, "stream a test pattern instead of the screen")
 	flag.Parse()
@@ -98,7 +98,7 @@ func loadConfig() Config {
 	if *fps > 0 {
 		cfg.FPS = *fps
 	}
-	if *mon >= 0 {
+	if *mon >= -1 {
 		cfg.Monitor = *mon
 	}
 	if *test {
@@ -125,6 +125,10 @@ type Agent struct {
 	mu    sync.Mutex
 	sess  *Session
 	input InputInjector
+
+	screens []Screen // monitors, refreshed at the start of each session
+	sel     int      // current screen index, or AllScreens
+	capMu   sync.Mutex
 }
 
 type Session struct {
@@ -133,6 +137,7 @@ type Session struct {
 	pc      *webrtc.PeerConnection
 	track   *webrtc.TrackLocalStaticSample
 	cap     *Capture
+	dc      *webrtc.DataChannel
 	once    sync.Once
 	pending []webrtc.ICECandidateInit
 }
@@ -289,6 +294,9 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 		pc.Close()
 		return err
 	}
+	a.screens = getScreens(a.cfg)
+	a.sel = validSel(a.screens, a.sel)
+	a.input.SetTarget(target(a.screens, a.sel))
 	s := &Session{sid: sid, client: client, pc: pc, track: track}
 	a.mu.Lock()
 	a.sess = s
@@ -318,15 +326,22 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 		dc.OnMessage(func(msg webrtc.DataChannelMessage) {
 			var ev InputEvent
 			if json.Unmarshal(msg.Data, &ev) == nil {
-				if ev.T == "ping" {
+				switch ev.T {
+				case "ping":
 					_ = dc.SendText(string(msg.Data))
-					return
+				case "screen":
+					go a.switchScreen(s, ev.N)
+				default:
+					a.input.Handle(ev)
 				}
-				a.input.Handle(ev)
 			}
 		})
 		dc.OnOpen(func() {
-			info, _ := json.Marshal(map[string]any{"t": "hello", "name": a.cfg.Name, "os": runtime.GOOS, "version": version, "encoder": a.cfg.Encoder})
+			a.mu.Lock()
+			s.dc = dc
+			a.mu.Unlock()
+			info, _ := json.Marshal(map[string]any{"t": "hello", "name": a.cfg.Name, "os": runtime.GOOS, "version": version,
+				"encoder": a.cfg.Encoder, "screens": a.screens, "screen": a.sel})
 			_ = dc.SendText(string(info))
 		})
 	})
@@ -336,7 +351,9 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 		switch st {
 		case webrtc.PeerConnectionStateConnected:
 			s.once.Do(func() {
-				capt, err := StartCapture(a.cfg, track)
+				a.capMu.Lock()
+				defer a.capMu.Unlock()
+				capt, err := StartCapture(a.cfg, a.screens, a.sel, track)
 				if err != nil {
 					log.Printf("capture failed: %v", err)
 					a.send(wsMsg{Type: "bye", To: s.client, Sid: s.sid})
@@ -346,7 +363,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 				a.mu.Lock()
 				s.cap = capt
 				a.mu.Unlock()
-				log.Printf("▶ streaming to viewer (session %s)", s.sid)
+				log.Printf("▶ streaming %s to viewer (session %s)", screenLabel(a.screens, a.sel), s.sid)
 			})
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			a.mu.Lock()
@@ -377,6 +394,53 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	return nil
 }
 
+// switchScreen restarts capture on another monitor (or all of them) mid-session.
+func (a *Agent) switchScreen(s *Session, sel int) {
+	a.capMu.Lock()
+	defer a.capMu.Unlock()
+	a.mu.Lock()
+	if a.sess != s {
+		a.mu.Unlock()
+		return
+	}
+	a.screens = getScreens(a.cfg)
+	sel = validSel(a.screens, sel)
+	old := s.cap
+	s.cap = nil
+	a.sel = sel
+	a.mu.Unlock()
+
+	if old != nil {
+		old.Stop()
+	}
+	a.input.ReleaseAll()
+	a.input.SetTarget(target(a.screens, sel))
+	capt, err := StartCapture(a.cfg, a.screens, sel, s.track)
+	a.mu.Lock()
+	if err == nil && a.sess == s {
+		s.cap = capt
+	}
+	dc := s.dc
+	a.mu.Unlock()
+	if err != nil {
+		log.Printf("could not switch screen: %v", err)
+		return
+	}
+	log.Printf("switched to %s", screenLabel(a.screens, sel))
+	if dc != nil {
+		msg, _ := json.Marshal(map[string]any{"t": "screen", "screen": sel, "screens": a.screens})
+		_ = dc.SendText(string(msg))
+	}
+}
+
+func screenLabel(ss []Screen, sel int) string {
+	t := target(ss, sel)
+	if sel == AllScreens && len(ss) > 1 {
+		return fmt.Sprintf("all %d screens (%dx%d)", len(ss), t.W, t.H)
+	}
+	return fmt.Sprintf("%s (%dx%d)", t.Name, t.W, t.H)
+}
+
 func (a *Agent) closeSession(reason string) {
 	a.mu.Lock()
 	s := a.sess
@@ -397,7 +461,11 @@ func main() {
 	log.SetFlags(log.Ltime)
 	cfg := loadConfig()
 	platformInit()
-	a := &Agent{cfg: cfg, input: newInjector(cfg)}
+	a := &Agent{cfg: cfg, input: newInjector(cfg), sel: cfg.Monitor}
+	a.screens = getScreens(cfg)
+	for _, sc := range a.screens {
+		log.Printf("found %s: %dx%d at (%d,%d)", sc.Name, sc.W, sc.H, sc.X, sc.Y)
+	}
 	log.Printf("Maze Remote agent %s — %s (%s), encoder %s, %d fps", version, cfg.Name, runtime.GOOS, cfg.Encoder, cfg.FPS)
 	if cfg.Test {
 		log.Println("TEST MODE: streaming a test pattern; input is logged, not applied")

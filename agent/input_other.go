@@ -26,16 +26,21 @@ func displayName() string {
 
 type xdoInjector struct {
 	mu     sync.Mutex
-	w, h   int
+	t      Screen
 	warned bool
 }
 
-func NewInputInjector(monitor int) InputInjector {
-	x := &xdoInjector{w: 1920, h: 1080}
+func NewInputInjector() InputInjector { return &xdoInjector{t: Screen{W: 1920, H: 1080}} }
+
+func (x *xdoInjector) SetTarget(t Screen) { x.mu.Lock(); x.t = t; x.mu.Unlock() }
+
+// listScreens: one screen covering the X display (multi-monitor X11 shows up as one big desktop).
+func listScreens() []Screen {
+	s := Screen{Index: 0, Name: "Screen 1", W: 1920, H: 1080, Primary: true}
 	if out, err := exec.Command("xdotool", "getdisplaygeometry").Output(); err == nil {
-		fmt.Sscanf(string(out), "%d %d", &x.w, &x.h)
+		fmt.Sscanf(string(out), "%d %d", &s.W, &s.H)
 	}
-	return x
+	return []Screen{s}
 }
 
 func (x *xdoInjector) run(args ...string) {
@@ -52,7 +57,7 @@ func (x *xdoInjector) Handle(ev InputEvent) {
 	defer x.mu.Unlock()
 	switch ev.T {
 	case "mm":
-		x.run("mousemove", fmt.Sprint(int(clamp01(ev.X)*float64(x.w-1))), fmt.Sprint(int(clamp01(ev.Y)*float64(x.h-1))))
+		x.run("mousemove", fmt.Sprint(x.t.X+int(clamp01(ev.X)*float64(x.t.W-1))), fmt.Sprint(x.t.Y+int(clamp01(ev.Y)*float64(x.t.H-1))))
 	case "md":
 		x.run("mousedown", xButtons[ev.B])
 	case "mu":

@@ -335,6 +335,8 @@ async function startSession(host, card) {
   $("#stage-overlay").classList.remove("gone");
   $("#info-drawer").hidden = true;
   $("#keys-pop").hidden = true;
+  $("#screens-pop").hidden = true;
+  setScreens([], 0);
   sessEl.hidden = false;
   document.body.style.overflow = "hidden";
   document.body.classList.add("in-session");
@@ -361,6 +363,7 @@ async function endSession(reason) {
   if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
   if (!$("#info-drawer").hidden) closeEl($("#info-drawer"), "drawer");
   if (!$("#keys-pop").hidden) closeEl($("#keys-pop"), "pop");
+  if (!$("#screens-pop").hidden) closeEl($("#screens-pop"), "pop");
 
   // the card may have been re-rendered: find it again by id
   const card = $(`.host-card[data-id="${CSS.escape(s.host.id)}"]`);
@@ -402,8 +405,20 @@ class RtcSession {
       if (h264.length) tr.setCodecPreferences(h264);
     } catch {}
     this.dc = pc.createDataChannel("input", { ordered: true });
+    this.dc.onopen = () => { if (this.pendingScreen !== undefined) { this.send({ t: "screen", n: this.pendingScreen }); this.pendingScreen = undefined; } };
     this.dc.onmessage = (e) => {
-      try { const m = JSON.parse(e.data); if (m.t === "hello") this.info = m; } catch {}
+      let m; try { m = JSON.parse(e.data); } catch { return; }
+      if (m.t === "hello") {
+        this.info = m;
+        setScreens(m.screens || [], m.screen ?? 0);
+        // restore the screen you used last time on this PC
+        const want = store.get("screen:" + this.host.id, null);
+        if (want !== null && want !== m.screen && screenExists(want)) this.send({ t: "screen", n: want });
+      } else if (m.t === "screen") {
+        setScreens(m.screens || screens.list, m.screen);
+        $("#stage-overlay").classList.add("gone");
+        toast("Showing " + screenName(m.screen), "ok");
+      }
     };
     pc.ontrack = (e) => {
       try { e.receiver.playoutDelayHint = 0; e.receiver.jitterBufferTarget = 0; } catch {}
@@ -456,7 +471,7 @@ class RtcSession {
     $("#sess-stats").textContent = `${Math.round(fps)} fps · ${mbps.toFixed(1)} Mbps · ${ms}`;
     updateInfo({
       Host: this.host.name, OS: this.info.os || this.host.os || "–", Agent: this.info.version ? "v" + this.info.version : "–",
-      Encoder: this.info.encoder || "–", Codec: codec || "–", Resolution: w ? `${w}×${h}` : "–",
+      Encoder: this.info.encoder || "–", Codec: codec || "–", Screen: screens.list.length ? screenName(screens.current).replace(/^./, (c) => c.toUpperCase()) : "–", Resolution: w ? `${w}×${h}` : "–",
       Framerate: Math.round(fps) + " fps", Bitrate: mbps.toFixed(2) + " Mbps", Latency: ms,
       Route: remote === "relay" || local === "relay" ? "Relayed (TURN)" : local ? "Direct (peer-to-peer)" : "–",
     });
@@ -543,13 +558,88 @@ async function sendCombo(combo) {
   toast("Sent " + combo.replace(/Left|Key/g, "").replace(/\+/g, " + ").replace("Meta", "Win"));
 }
 
+// ---------------- screens ----------------
+const screens = { list: [], current: 0 };
+const screenExists = (n) => (n === -1 && screens.list.length > 1) || screens.list.some((s) => s.i === n);
+const screenName = (n) => (n === -1 ? "all screens" : (screens.list.find((s) => s.i === n) || { name: "screen" }).name.toLowerCase().replace(/^screen/, "screen"));
+
+function setScreens(list, current) {
+  screens.list = list || [];
+  screens.current = current;
+  const multi = screens.list.length > 1;
+  $("#tb-screens").hidden = !multi;
+  $("#tb-screens-badge").textContent = !multi ? "" : current === -1 ? "∗" : String(screens.list.findIndex((s) => s.i === current) + 1);
+  renderScreens();
+}
+
+function renderScreens() {
+  const list = $("#screens-list");
+  const items = screens.list.map((s, k) => ({ n: s.i, icon: s.primary ? "desktop_windows" : "monitor", label: s.name + (s.primary ? " · main" : ""), dims: `${s.w}×${s.h}` }));
+  if (screens.list.length > 1) {
+    const xs = screens.list.map((s) => [s.x, s.y, s.x + s.w, s.y + s.h]);
+    const W = Math.max(...xs.map((r) => r[2])) - Math.min(...xs.map((r) => r[0]));
+    const H = Math.max(...xs.map((r) => r[3])) - Math.min(...xs.map((r) => r[1]));
+    items.push({ n: -1, icon: "view_column", label: "All screens", dims: `${W}×${H}` });
+  }
+  list.innerHTML = "";
+  for (const it of items) {
+    const b = document.createElement("button");
+    b.className = it.n === screens.current ? "current" : "";
+    b.innerHTML = `<span class="material-symbols-outlined">${it.icon}</span><span></span><span class="screen-dims">${it.dims}</span>`;
+    b.children[1].textContent = it.label;
+    b.addEventListener("click", () => pickScreen(it.n));
+    list.append(b);
+  }
+  // mini map of how the monitors are arranged
+  const map = $("#screens-map");
+  map.innerHTML = "";
+  map.classList.toggle("all", screens.current === -1);
+  if (screens.list.length < 2) { map.hidden = true; return; }
+  map.hidden = false;
+  const minX = Math.min(...screens.list.map((s) => s.x)), minY = Math.min(...screens.list.map((s) => s.y));
+  const maxX = Math.max(...screens.list.map((s) => s.x + s.w)), maxY = Math.max(...screens.list.map((s) => s.y + s.h));
+  const box = { w: 230, h: 70 };
+  const k = Math.min(box.w / (maxX - minX), box.h / (maxY - minY));
+  const offX = (box.w - (maxX - minX) * k) / 2, offY = (box.h - (maxY - minY) * k) / 2;
+  screens.list.forEach((s, idx) => {
+    const d = document.createElement("div");
+    Object.assign(d.style, { left: offX + (s.x - minX) * k + "px", top: offY + (s.y - minY) * k + "px", width: s.w * k - 3 + "px", height: s.h * k - 3 + "px" });
+    d.textContent = idx + 1;
+    if (s.i === screens.current) d.className = "current";
+    d.addEventListener("click", () => pickScreen(s.i));
+    map.append(d);
+  });
+}
+
+async function pickScreen(n) {
+  if (!session) return;
+  $("#tb-screens").classList.remove("on");
+  await closeEl($("#screens-pop"), "pop");
+  stage.focus();
+  if (n === screens.current) return;
+  store.set("screen:" + session.host.id, n);
+  session.send({ t: "screen", n });
+}
+
+$("#tb-screens").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const pop = $("#screens-pop");
+  if (!$("#keys-pop").hidden) { $("#tb-keys").classList.remove("on"); closeEl($("#keys-pop"), "pop"); }
+  if (pop.hidden) { renderScreens(); $("#tb-screens").classList.add("on"); await openEl(pop, "pop"); }
+  else { $("#tb-screens").classList.remove("on"); await closeEl(pop, "pop"); }
+});
+document.addEventListener("pointerdown", (e) => {
+  const pop = $("#screens-pop");
+  if (!pop.hidden && !e.target.closest("#screens-pop, #tb-screens")) { $("#tb-screens").classList.remove("on"); closeEl(pop, "pop"); }
+});
+
 // ---------------- toolbar ----------------
 let hideTimer = null;
 function showToolbar() {
   $("#toolbar").classList.remove("tucked");
   clearTimeout(hideTimer);
   if (prefs.autoHide) hideTimer = setTimeout(() => {
-    if (!$("#keys-pop").hidden || $("#toolbar").matches(":hover")) return showToolbar();
+    if (!$("#keys-pop").hidden || !$("#screens-pop").hidden || $("#toolbar").matches(":hover")) return showToolbar();
     $("#toolbar").classList.add("tucked");
   }, 2600);
 }
@@ -575,6 +665,7 @@ document.addEventListener("fullscreenchange", () => {
 $("#tb-keys").addEventListener("click", async (e) => {
   e.stopPropagation();
   const pop = $("#keys-pop");
+  if (!$("#screens-pop").hidden) { $("#tb-screens").classList.remove("on"); closeEl($("#screens-pop"), "pop"); }
   if (pop.hidden) { $("#tb-keys").classList.add("on"); await openEl(pop, "pop"); }
   else { $("#tb-keys").classList.remove("on"); await closeEl(pop, "pop"); }
 });
@@ -660,7 +751,16 @@ class DemoSession {
     this.dirty = true;
     video.hidden = true;
     stage.prepend(c);
-    setTimeout(() => { if (session === this) onVideoReady(); }, 700);
+    setTimeout(() => {
+      if (session !== this) return;
+      onVideoReady();
+      setScreens([
+        { i: 0, name: "Screen 1", x: 0, y: 0, w: 2560, h: 1440, primary: true },
+        { i: 1, name: "Screen 2", x: 2560, y: 180, w: 1920, h: 1080 },
+      ], store.get("screen:" + this.host.id, 0));
+      this.screenLabel = screenName(screens.current);
+      this.bg = this.renderStatic(); this.dirty = true;
+    }, 700);
     this.raf = requestAnimationFrame(this.loop);
     this.blink = setInterval(() => { this.dirty = true; }, 500);
     this.statsTimer = setInterval(() => {
@@ -676,6 +776,16 @@ class DemoSession {
   onSignal() {}
   send(ev) {
     this.dirty = true;
+    if (ev.t === "screen") {
+      setTimeout(() => {
+        if (session !== this) return;
+        setScreens(screens.list, ev.n);
+        this.screenLabel = screenName(ev.n);
+        this.bg = this.renderStatic(); this.dirty = true;
+        toast("Showing " + this.screenLabel, "ok");
+      }, 350);
+      return;
+    }
     if (ev.t === "mm") Object.assign(this.cursor, { x: ev.x, y: ev.y });
     else if (ev.t === "md") { this.down = true; this.cursor.x = ev.x ?? this.cursor.x; this.cursor.y = ev.y ?? this.cursor.y; this.ripples.push({ x: this.cursor.x, y: this.cursor.y, t: performance.now(), b: ev.b }); }
     else if (ev.t === "mu") this.down = false;
@@ -712,6 +822,10 @@ class DemoSession {
     const mw = g.measureText("Maze ").width;
     g.fillStyle = "rgba(199,114,254,.16)"; g.font = "italic 400 150px 'Instrument Serif', Georgia, serif";
     g.fillText("remote.", 120 + mw, 760);
+    if (this.screenLabel) {
+      g.fillStyle = "#88826f"; g.font = "500 13px 'Geist Mono', monospace";
+      g.fillText(("demo · " + this.screenLabel).toUpperCase(), 120, 800);
+    }
     this.winFrame(g, ...this.notepadRect, "notes.txt — Notepad", "#161310");
     this.winFrame(g, ...this.consoleRect, "maze-remote-agent.exe", "#0d0b09");
     // taskbar

@@ -124,6 +124,7 @@
       </div>
       <div class="tb-sep"></div>
       <div class="tb-actions">
+        <button class="tb-btn" id="tb-screens" title="Screens" hidden><span class="material-symbols-outlined">desktop_windows</span><span class="tb-badge" id="tb-screens-badge"></span></button>
         <button class="tb-btn" id="tb-keys" title="Send keys"><span class="material-symbols-outlined">keyboard</span></button>
         <button class="tb-btn" id="tb-paste" title="Type text"><span class="material-symbols-outlined">content_paste</span></button>
         <button class="tb-btn" id="tb-info" title="Session info"><span class="material-symbols-outlined">info</span></button>
@@ -132,6 +133,13 @@
       </div>
     </div>
     <button class="toolbar-handle" id="toolbar-handle" aria-label="Show toolbar"></button>
+
+    <div class="menu-pop screens-pop" id="screens-pop" hidden>
+      <p class="menu-label meta">Show screen</p>
+      <div id="screens-list"></div>
+      <div class="menu-sep"></div>
+      <div class="screens-map" id="screens-map" aria-hidden="true"></div>
+    </div>
 
     <div class="menu-pop" id="keys-pop" hidden>
       <button data-combo="MetaLeft"><span class="material-symbols-outlined">grid_view</span>Windows key</button>

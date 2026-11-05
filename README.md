@@ -74,7 +74,9 @@ Open `http://<pi-ip>:8080` and sign in with `MR_PASSWORD`.
 | `amf` | AMD | |
 | `qsv` | Intel | |
 
-Other flags: `-monitor 1` (second screen), `-test` (stream a test pattern; input is only logged).
+**Multiple monitors:** in a session, the screen button in the toolbar lists every monitor plus **All screens** (all of them stitched together the way they're arranged on your desk). The website remembers your choice per PC. To pick the starting screen on the agent side, set `"monitor": 1` (second screen) or `"monitor": -1` (all screens).
+
+Other flags: `-test` streams a test pattern (two fake screens) and only logs input.
 
 ### 3. Using it from outside your home
 

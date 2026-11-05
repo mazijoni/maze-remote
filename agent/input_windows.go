@@ -100,25 +100,19 @@ func monitors() []rect {
 
 type winInjector struct {
 	mu      sync.Mutex
-	monitor int
-	r       rect
+	t       Screen
 	keys    map[string]bool
 	buttons map[int]bool
 }
 
-func NewInputInjector(monitor int) InputInjector {
-	w := &winInjector{monitor: monitor, keys: map[string]bool{}, buttons: map[int]bool{}}
-	w.refresh()
-	return w
+func NewInputInjector() InputInjector {
+	return &winInjector{t: Screen{W: 1920, H: 1080}, keys: map[string]bool{}, buttons: map[int]bool{}}
 }
 
-func (w *winInjector) refresh() {
-	ms := monitors()
-	if w.monitor < len(ms) {
-		w.r = ms[w.monitor]
-	} else if len(ms) > 0 {
-		w.r = ms[0]
-	}
+func (w *winInjector) SetTarget(t Screen) {
+	w.mu.Lock()
+	w.t = t
+	w.mu.Unlock()
 }
 
 func sendMouse(flags uint32, data int32) {
@@ -139,8 +133,8 @@ func sendUnicode(ch uint16) {
 }
 
 func (w *winInjector) move(x, y float64) {
-	px := w.r.Left + int32(clamp01(x)*float64(w.r.Right-w.r.Left-1))
-	py := w.r.Top + int32(clamp01(y)*float64(w.r.Bottom-w.r.Top-1))
+	px := int32(w.t.X) + int32(clamp01(x)*float64(w.t.W-1))
+	py := int32(w.t.Y) + int32(clamp01(y)*float64(w.t.H-1))
 	procSetCursorPos.Call(uintptr(px), uintptr(py))
 }
 
@@ -218,8 +212,6 @@ func (w *winInjector) Handle(ev InputEvent) {
 				sendUnicode(ch)
 			}
 		}
-	case "refresh":
-		w.refresh()
 	}
 }
 
