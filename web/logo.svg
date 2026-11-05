@@ -1,12 +1,16 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 90" fill="none">
-  <g>
-    <polygon points="45,5 67,5 62,15 40,15" fill="#C773FF"/>
-    <polygon points="31,19 79,19 74,29 26,29" fill="#fff"/>
-    <polygon points="21,33 39,33 34,43 16,43" fill="#C773FF"/>
-    <polygon points="42,33 89,33 84,43 37,43" fill="#fff"/>
-    <polygon points="19,47 67,47 62,57 14,57" fill="#fff"/>
-    <polygon points="70,47 89,47 84,57 65,57" fill="#C773FF"/>
-    <polygon points="31,61 79,61 74,71 26,71" fill="#fff"/>
-    <polygon points="43,75 65,75 60,85 38,85" fill="#C773FF"/>
-  </g>
+<svg version="1.2" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 209 197" width="209" height="197">
+	<style>
+		.s0 { fill: #c673ff;stroke: #c673ff;stroke-miterlimit:10 } 
+		.s1 { fill: #ffffff;stroke: #ffffff;stroke-miterlimit:10 } 
+	</style>
+	<g id="Layer 1">
+		<path id="Shape 1" fill-rule="evenodd" class="s0" d="m125.47 24l-14.24 20h-57.53l14.24-20z"/>
+		<path id="Shape 1 copy" fill-rule="evenodd" class="s1" d="m163.59 50l-14.24 20h-113.02l14.24-20z"/>
+		<path id="Shape 1 copy 2" fill-rule="evenodd" class="s1" d="m188.4 76l-14.24 20h-107.54l14.24-20z"/>
+		<path id="Shape 1 copy 6" fill-rule="evenodd" class="s0" d="m72.27 76l-14.23 20h-38.96l14.23-20z"/>
+		<path id="Shape 1 copy 7" fill-rule="evenodd" class="s0" d="m188.4 101.08l-14.23 20h-38.96l14.23-20z"/>
+		<path id="Shape 1 copy 3" fill-rule="evenodd" class="s1" d="m140.5 101.96l-14.23 20h-107.54l14.23-20z"/>
+		<path id="Shape 1 copy 4" fill-rule="evenodd" class="s1" d="m171 127.06l-14.23 20h-113.2l14.24-20z"/>
+		<path id="Shape 1 copy 5" fill-rule="evenodd" class="s0" d="m153.07 152.84l-14.23 20h-57.17l14.23-20z"/>
+	</g>
 </svg>

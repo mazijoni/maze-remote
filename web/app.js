@@ -31,28 +31,28 @@ function animate(el, frames, opts) {
 // open/close an element with a matching pair of animations
 const motions = {
   modal: {
-    in: [{ opacity: 0, transform: "translateY(24px) scale(.94)", filter: "blur(6px)" }, { opacity: 1, transform: "none", filter: "blur(0)" }],
-    inOpts: { duration: 520, easing: EASE_OUT },
-    out: [{ opacity: 1, transform: "none", filter: "blur(0)" }, { opacity: 0, transform: "translateY(16px) scale(.96)", filter: "blur(4px)" }],
-    outOpts: { duration: 260, easing: EASE_IN },
+    in: [{ opacity: 0, transform: "translateY(10px) scale(.98)" }, { opacity: 1, transform: "none" }],
+    inOpts: { duration: 280, easing: EASE_OUT },
+    out: [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(6px) scale(.99)" }],
+    outOpts: { duration: 160, easing: EASE_IN },
   },
   pop: {
-    in: [{ opacity: 0, transform: "translate(-50%, -8px) scale(.92)" }, { opacity: 1, transform: "translate(-50%, 0) scale(1)" }],
-    inOpts: { duration: 380, easing: SPRING },
-    out: [{ opacity: 1, transform: "translate(-50%, 0) scale(1)" }, { opacity: 0, transform: "translate(-50%, -6px) scale(.95)" }],
-    outOpts: { duration: 180, easing: EASE_IN },
+    in: [{ opacity: 0, transform: "translate(-50%, -6px)" }, { opacity: 1, transform: "translate(-50%, 0)" }],
+    inOpts: { duration: 200, easing: EASE_OUT },
+    out: [{ opacity: 1, transform: "translate(-50%, 0)" }, { opacity: 0, transform: "translate(-50%, -4px)" }],
+    outOpts: { duration: 120, easing: EASE_IN },
   },
   drawer: {
-    in: [{ transform: "translateX(100%)", opacity: 0.4 }, { transform: "none", opacity: 1 }],
-    inOpts: { duration: 480, easing: EASE_OUT },
-    out: [{ transform: "none", opacity: 1 }, { transform: "translateX(100%)", opacity: 0.4 }],
-    outOpts: { duration: 280, easing: EASE_IN },
+    in: [{ transform: "translateX(calc(100% + 24px))" }, { transform: "none" }],
+    inOpts: { duration: 340, easing: EASE_OUT },
+    out: [{ transform: "none" }, { transform: "translateX(calc(100% + 24px))" }],
+    outOpts: { duration: 220, easing: EASE_IN },
   },
   view: {
-    in: [{ opacity: 0, transform: "translateY(20px)" }, { opacity: 1, transform: "none" }],
-    inOpts: { duration: 600, easing: EASE_OUT },
-    out: [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(-12px)" }],
-    outOpts: { duration: 260, easing: EASE_IN },
+    in: [{ opacity: 0, transform: "translateY(8px)" }, { opacity: 1, transform: "none" }],
+    inOpts: { duration: 380, easing: EASE_OUT },
+    out: [{ opacity: 1 }, { opacity: 0 }],
+    outOpts: { duration: 160, easing: EASE_IN },
   },
 };
 
@@ -75,9 +75,9 @@ function toast(msg, kind = "") {
   t.className = "toast " + kind;
   t.textContent = msg;
   $("#toasts").append(t);
-  animate(t, [{ opacity: 0, transform: "translateY(20px) scale(.9)" }, { opacity: 1, transform: "none" }], { duration: 420, easing: SPRING });
+  animate(t, [{ opacity: 0, transform: "translateX(16px)" }, { opacity: 1, transform: "none" }], { duration: 260, easing: EASE_OUT });
   setTimeout(async () => {
-    await animate(t, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(10px) scale(.95)" }], { duration: 240, easing: EASE_IN });
+    await animate(t, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(16px)" }], { duration: 180, easing: EASE_IN });
     t.remove();
   }, 3400);
 }
@@ -99,7 +99,7 @@ async function openModal(id) {
   if (openModalEl) await closeModal(true);
   root.hidden = false;
   openModalEl = $("#" + id);
-  animate($(".scrim", root), [{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: "ease-out" });
+  animate($(".scrim", root), [{ opacity: 0 }, { opacity: 1 }], { duration: 200, easing: "ease-out" });
   await openEl(openModalEl, "modal");
   const f = $("textarea, input:not([type=checkbox])", openModalEl);
   if (f) f.focus();
@@ -109,7 +109,7 @@ async function closeModal(keepScrim = false) {
   const root = $("#modal-root");
   const el = openModalEl;
   openModalEl = null;
-  if (!keepScrim) animate($(".scrim", root), [{ opacity: 1 }, { opacity: 0 }], { duration: 260, easing: "ease-in" });
+  if (!keepScrim) animate($(".scrim", root), [{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: "ease-in" });
   await closeEl(el, "modal");
   if (!keepScrim && !openModalEl) root.hidden = true;
   if (session) $("#stage").focus();
@@ -133,7 +133,7 @@ const wsURL = (server) => server.replace(/^http/, "ws").replace(/\/$/, "") + "/w
 
 function setConn(kind, text) {
   const p = $("#conn-pill");
-  p.className = "pill " + kind;
+  p.className = "status " + kind;
   $("span", p).textContent = text;
 }
 
@@ -204,15 +204,11 @@ function logout() {
 $("#btn-logout").addEventListener("click", logout);
 $("#btn-settings").addEventListener("click", () => openModal("modal-settings"));
 $("#btn-add").addEventListener("click", openAddModal);
+$("#btn-add-2").addEventListener("click", openAddModal);
 
-window.addEventListener("scroll", () => $(".navbar").classList.toggle("scrolled", scrollY > 10), { passive: true });
 
-const OS_ICONS = {
-  windows: '<path d="M3 5.5 10.5 4.5v7H3zM12.5 4.2 21 3v8.5h-8.5zM3 12.5h7.5v7L3 18.5zM12.5 12.5H21V21l-8.5-1.2z"/>',
-  linux: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>',
-  darwin: '<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>',
-  default: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
-};
+const OS_ICONS = { windows: "desktop_windows", linux: "terminal", darwin: "laptop_mac", default: "computer" };
+const OS_NAMES = { windows: "Windows", linux: "Linux", darwin: "macOS" };
 
 function ago(ts) {
   const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
@@ -230,12 +226,12 @@ function renderHosts(hosts, animateIn = false) {
   grid.innerHTML = "";
 
   if (!hosts && !state.demo && list.length === 0) {
-    grid.innerHTML = '<div class="empty"><div class="spinner" style="margin:0 auto 16px"></div><p>Looking for machines…</p></div>';
+    grid.innerHTML = '<div class="empty-state"><div class="spinner"></div><p>Looking for machines…</p></div>';
     return;
   }
   if (list.length === 0) {
-    grid.innerHTML = '<div class="empty"><h3>No machines online yet</h3><p>Run the agent on a PC and it shows up here automatically.</p><button class="btn btn-primary">Set up a machine</button></div>';
-    $(".empty .btn", grid).addEventListener("click", openAddModal);
+    grid.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">desktop_access_disabled</span><p>No machines online yet</p><p class="sub">Run the agent on a PC and it shows up here automatically.</p><button class="btn btn-primary"><span class="material-symbols-outlined">add</span>Set up a machine</button></div>';
+    $(".empty-state .btn", grid).addEventListener("click", openAddModal);
     return;
   }
   list.forEach((h, i) => {
@@ -243,7 +239,8 @@ function renderHosts(hosts, animateIn = false) {
     card.dataset.id = h.id;
     const online = h.online !== false;
     card.classList.add(online ? (h.busy ? "busy" : "online") : "offline");
-    $(".host-os", card).innerHTML = OS_ICONS[h.os] || OS_ICONS.default;
+    $(".host-os", card).textContent = OS_ICONS[h.os] || OS_ICONS.default;
+    $(".host-tag", card).textContent = OS_NAMES[h.os] || h.os || "PC";
     $(".host-name", card).textContent = h.name;
     const sub = !online ? "Offline" : h.busy ? "In use" : "Online · " + ago(h.since);
     $(".host-sub", card).innerHTML = '<i class="dot"></i>' + sub;
@@ -325,7 +322,7 @@ function cardClip(card) {
   if (!card || !card.isConnected) return null;
   const r = card.getBoundingClientRect();
   const W = innerWidth, H = innerHeight;
-  return `inset(${r.top}px ${W - r.right}px ${H - r.bottom}px ${r.left}px round 18px)`;
+  return `inset(${r.top}px ${W - r.right}px ${H - r.bottom}px ${r.left}px)`;
 }
 
 async function startSession(host, card) {
@@ -344,9 +341,9 @@ async function startSession(host, card) {
 
   const from = cardClip(card);
   const anim = from
-    ? animate(sessEl, [{ clipPath: from, opacity: 0.6 }, { clipPath: "inset(0px 0px 0px 0px round 0px)", opacity: 1 }], { duration: 650, easing: EASE_OUT })
+    ? animate(sessEl, [{ clipPath: from, opacity: 0.6 }, { clipPath: "inset(0px 0px 0px 0px)", opacity: 1 }], { duration: 480, easing: EASE_OUT })
     : animate(sessEl, [{ opacity: 0, transform: "scale(1.04)" }, { opacity: 1, transform: "none" }], { duration: 450, easing: EASE_OUT });
-  animate($("#toolbar"), [{ opacity: 0, transform: "translate(-50%, -30px)" }, { opacity: 1, transform: "translate(-50%, 0)" }], { duration: 500, delay: 350, easing: SPRING })
+  animate($("#toolbar"), [{ opacity: 0, transform: "translate(-50%, -16px)" }, { opacity: 1, transform: "translate(-50%, 0)" }], { duration: 300, delay: 280, easing: EASE_OUT })
     .then((a) => a.cancel());
   showToolbar();
   session.start();
@@ -368,7 +365,7 @@ async function endSession(reason) {
   // the card may have been re-rendered: find it again by id
   const card = $(`.host-card[data-id="${CSS.escape(s.host.id)}"]`);
   const to = cardClip(card);
-  if (to) await animate(sessEl, [{ clipPath: "inset(0px 0px 0px 0px round 0px)", opacity: 1 }, { clipPath: to, opacity: 0.4 }], { duration: 520, easing: "cubic-bezier(0.65, 0, 0.35, 1)" });
+  if (to) await animate(sessEl, [{ clipPath: "inset(0px 0px 0px 0px)", opacity: 1 }, { clipPath: to, opacity: 0.4 }], { duration: 400, easing: "cubic-bezier(0.65, 0, 0.35, 1)" });
   else await animate(sessEl, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.97)" }], { duration: 300, easing: EASE_IN });
 
   sessEl.hidden = true;
@@ -569,7 +566,11 @@ $("#tb-full").addEventListener("click", async () => {
   } catch {}
   stage.focus();
 });
-document.addEventListener("fullscreenchange", () => $("#tb-full").classList.toggle("on", !!document.fullscreenElement));
+document.addEventListener("fullscreenchange", () => {
+  const on = !!document.fullscreenElement;
+  $("#tb-full").classList.toggle("on", on);
+  $("#tb-full .material-symbols-outlined").textContent = on ? "fullscreen_exit" : "fullscreen";
+});
 
 $("#tb-keys").addEventListener("click", async (e) => {
   e.stopPropagation();
@@ -655,6 +656,7 @@ class DemoSession {
     c.className = "demo-canvas";
     this.ctx = c.getContext("2d", { alpha: false });
     this.bg = this.renderStatic();
+    if (document.fonts) document.fonts.ready.then(() => { if (session === this) { this.bg = this.renderStatic(); this.dirty = true; } });
     this.dirty = true;
     video.hidden = true;
     stage.prepend(c);
@@ -700,21 +702,24 @@ class DemoSession {
     const W = 1600, H = 900;
     const c = document.createElement("canvas"); c.width = W; c.height = H;
     const g = c.getContext("2d");
-    g.fillStyle = "#0f0b15"; g.fillRect(0, 0, W, H);
-    const orb = (x, y, r, col) => { const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, col); gr.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = gr; g.fillRect(0, 0, W, H); };
-    orb(1250, 180, 620, "rgba(162,53,255,0.55)");
-    orb(250, 780, 520, "rgba(91,26,168,0.5)");
-    g.save(); g.globalAlpha = 0.18; g.translate(W / 2 - 160, H - 330); g.scale(2.6, 2.6);
-    [[45,5,67,"#C773FF"],[31,19,79,"#fff"],[21,33,39,"#C773FF"],[42,33,89,"#fff"],[19,47,67,"#fff"],[70,47,89,"#C773FF"],[31,61,79,"#fff"],[43,75,65,"#C773FF"]]
-      .forEach(([a, y, b, col]) => { g.fillStyle = col; g.beginPath(); g.moveTo(a, y); g.lineTo(b, y); g.lineTo(b - 5, y + 10); g.lineTo(a - 5, y + 10); g.fill(); });
-    g.restore();
-    this.winFrame(g, ...this.notepadRect, "notes.txt — Notepad", "#1e1729");
-    this.winFrame(g, ...this.consoleRect, "maze-remote-agent.exe", "#0b0810");
-    g.fillStyle = "rgba(14,10,20,0.88)"; g.fillRect(0, H - 56, W, 56);
-    g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(0, H - 56, W, 1);
+    g.fillStyle = "#0d0b09"; g.fillRect(0, 0, W, H);
+    // dot grain wallpaper
+    g.fillStyle = "rgba(236,232,223,.06)";
+    for (let y = 0; y < H; y += 6) for (let x = (y / 6) % 2 ? 3 : 0; x < W; x += 6) g.fillRect(x, y, 1, 1);
+    // big serif wordmark on the wallpaper
+    g.fillStyle = "rgba(236,232,223,.07)"; g.font = "400 150px 'Instrument Serif', Georgia, serif";
+    g.fillText("Maze", 120, 760);
+    const mw = g.measureText("Maze ").width;
+    g.fillStyle = "rgba(199,114,254,.16)"; g.font = "italic 400 150px 'Instrument Serif', Georgia, serif";
+    g.fillText("remote.", 120 + mw, 760);
+    this.winFrame(g, ...this.notepadRect, "notes.txt — Notepad", "#161310");
+    this.winFrame(g, ...this.consoleRect, "maze-remote-agent.exe", "#0d0b09");
+    // taskbar
+    g.fillStyle = "#161310"; g.fillRect(0, H - 56, W, 56);
+    g.fillStyle = "rgba(236,232,223,.22)"; g.fillRect(0, H - 56, W, 1);
     for (let i = 0; i < 6; i++) {
-      g.fillStyle = i === 0 ? "#a235ff" : "rgba(255,255,255,0.12)";
-      this.round(g, W / 2 - 165 + i * 56, H - 46, 36, 36, 9); g.fill();
+      g.fillStyle = i === 0 ? "#c772fe" : "#262019";
+      g.fillRect(W / 2 - 165 + i * 56, H - 46, 36, 36);
     }
     return c;
   }
@@ -727,7 +732,7 @@ class DemoSession {
 
     // notepad text
     let [x, y] = this.notepadRect;
-    g.fillStyle = "#e9e3f2"; g.font = "500 20px 'JetBrains Mono', monospace";
+    g.fillStyle = "#ece8df"; g.font = "400 20px 'Geist Mono', monospace";
     const text = (this.typed || "Click here and type — your keyboard\nreaches this demo PC.") + (Math.floor(t * 2) % 2 ? "▍" : "");
     let ly = y + 74;
     const lines = [];
@@ -736,17 +741,17 @@ class DemoSession {
 
     // console text
     [x, y] = this.consoleRect;
-    g.font = "500 17px 'JetBrains Mono', monospace";
+    g.font = "400 16px 'Geist Mono', monospace";
     this.log.slice(-9).forEach((l, i) => {
-      g.fillStyle = "#6b5f80"; g.fillText("13:0" + (i % 10), x + 16, y + 72 + i * 30);
-      g.fillStyle = l.startsWith("▶") ? "#4ade80" : "#cfc6dc"; g.fillText(l, x + 86, y + 72 + i * 30);
+      g.fillStyle = "#57534a"; g.fillText("13:0" + (i % 10), x + 16, y + 72 + i * 30);
+      g.fillStyle = l.startsWith("▶") ? "#6fcf97" : "#c8c2b3"; g.fillText(l, x + 86, y + 72 + i * 30);
     });
 
     // clock
     const now = new Date();
-    g.fillStyle = "#fff"; g.font = "600 17px Inter, sans-serif"; g.textAlign = "right";
+    g.fillStyle = "#ece8df"; g.font = "500 16px 'Geist Mono', monospace"; g.textAlign = "right";
     g.fillText(now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), W - 24, H - 30);
-    g.fillStyle = "rgba(255,255,255,.55)"; g.font = "500 13px Inter, sans-serif";
+    g.fillStyle = "#88826f"; g.font = "400 12px 'Geist Mono', monospace";
     g.fillText(now.toLocaleDateString(), W - 24, H - 12); g.textAlign = "left";
 
     // click ripples
@@ -754,8 +759,8 @@ class DemoSession {
     this.ripples = this.ripples.filter((r) => nowMs - r.t < 600);
     this.ripples.forEach((r) => {
       const p = (nowMs - r.t) / 600;
-      g.strokeStyle = r.b === 2 ? `rgba(255,92,122,${1 - p})` : `rgba(199,115,255,${1 - p})`;
-      g.lineWidth = 3; g.beginPath(); g.arc(r.x * W, r.y * H, 8 + p * 34, 0, Math.PI * 2); g.stroke();
+      g.strokeStyle = r.b === 2 ? `rgba(226,104,95,${1 - p})` : `rgba(199,114,254,${1 - p})`;
+      g.lineWidth = 2; const sz = 10 + p * 34; g.strokeRect(r.x * W - sz, r.y * H - sz, sz * 2, sz * 2);
     });
 
     // cursor
@@ -767,15 +772,15 @@ class DemoSession {
   round(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
   winFrame(g, x, y, w, h, title, bodyColor) {
     g.save();
-    g.shadowColor = "rgba(0,0,0,.55)"; g.shadowBlur = 40; g.shadowOffsetY = 18;
-    g.fillStyle = bodyColor; this.round(g, x, y, w, h, 14); g.fill();
+    g.shadowColor = "rgba(0,0,0,.5)"; g.shadowBlur = 30; g.shadowOffsetY = 10;
+    g.fillStyle = bodyColor; g.fillRect(x, y, w, h);
     g.restore();
-    g.save(); this.round(g, x, y, w, h, 14); g.clip();
-    g.fillStyle = "#261d34"; g.fillRect(x, y, w, 40);
-    g.fillStyle = "#cfc6dc"; g.font = "600 15px Inter, sans-serif"; g.fillText(title, x + 16, y + 26);
-    ["#ff5c7a", "#fbbf24", "#4ade80"].forEach((c, i) => { g.fillStyle = c; g.beginPath(); g.arc(x + w - 24 - i * 22, y + 20, 6, 0, Math.PI * 2); g.fill(); });
-    g.restore();
-    g.strokeStyle = "rgba(255,255,255,.1)"; g.lineWidth = 1; this.round(g, x, y, w, h, 14); g.stroke();
+    g.fillStyle = "#1e1a15"; g.fillRect(x, y, w, 40);
+    g.fillStyle = "rgba(236,232,223,.10)"; g.fillRect(x, y + 40, w, 1);
+    g.fillStyle = "#88826f"; g.font = "500 12px 'Geist Mono', monospace";
+    g.fillText(title.toUpperCase(), x + 16, y + 25);
+    ["#e2685f", "#57534a", "#57534a"].forEach((c, i) => { g.fillStyle = c; g.fillRect(x + w - 26 - i * 20, y + 16, 9, 9); });
+    g.strokeStyle = "rgba(236,232,223,.22)"; g.lineWidth = 1; g.strokeRect(x + .5, y + .5, w - 1, h - 1);
   }
 }
 
