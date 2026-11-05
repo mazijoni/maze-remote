@@ -31,8 +31,19 @@ jobs:
         with:
           name: maze-remote-agent
           path: dist/*
-      - name: Publish release (tags only)
+      - name: Publish release (version tags)
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
+          files: dist/*
+      - name: Publish "latest" release (main)
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build
+          body: |
+            Automatic build of the newest code on `main`.
+            Download `maze-remote-agent.exe` for Windows (x64), edit `maze-remote.json`, and run it.
+          make_latest: true
           files: dist/*
