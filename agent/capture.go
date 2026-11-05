@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/pion/webrtc/v4"
@@ -20,9 +21,11 @@ import (
 // Capture runs ffmpeg, which grabs the screen and encodes H.264 (Annex B) to stdout.
 // We split the stream into access units (frames) and feed them to the WebRTC track.
 type Capture struct {
-	cmd  *exec.Cmd
-	stop sync.Once
-	done chan struct{}
+	stopping atomic.Bool // set when we stop it on purpose
+	errMsg   string      // ffmpeg's error output if it exited by itself
+	cmd      *exec.Cmd
+	stop     sync.Once
+	done     chan struct{}
 }
 
 // The picture is scaled to fit es.MaxW x es.MaxH (at most 4K: H.264 hardware
@@ -143,7 +146,10 @@ func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *we
 		err := pump(bufio.NewReaderSize(stdout, 1<<20), track)
 		_ = cmd.Wait()
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
-			log.Printf("ffmpeg: %s", msg)
+			c.errMsg = msg
+			if !c.stopping.Load() {
+				log.Printf("ffmpeg: %s", msg)
+			}
 		}
 		if err != nil && err != io.EOF {
 			log.Printf("capture ended: %v", err)
@@ -207,7 +213,14 @@ func pump(r io.Reader, track *webrtc.TrackLocalStaticSample) error {
 	}
 }
 
+// Done is closed when ffmpeg exits, whether stopped or crashed.
+func (c *Capture) Done() <-chan struct{} { return c.done }
+
+// Crashed reports an exit we didn't ask for (e.g. the display went to sleep).
+func (c *Capture) Crashed() bool { return !c.stopping.Load() }
+
 func (c *Capture) Stop() {
+	c.stopping.Store(true)
 	c.stop.Do(func() {
 		if c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()

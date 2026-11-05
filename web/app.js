@@ -424,6 +424,11 @@ class RtcSession {
         const prev = quality.level;
         setQuality(m.quality, m.level, !!m.relayed);
         if (prev !== m.level) toast("Quality: " + LEVEL_NAMES[m.level] + (m.quality === "auto" ? " (auto)" : ""), "ok");
+      } else if (m.t === "status") {
+        // e.g. "Waking the screen…" while the agent recovers screen capture
+        const ov = $("#stage-overlay");
+        if (m.s) { $("#stage-status").textContent = m.s; ov.classList.remove("gone"); }
+        else if (video.readyState >= 2) ov.classList.add("gone");
       } else if (m.t === "screen") {
         setScreens(m.screens || screens.list, m.screen);
         $("#stage-overlay").classList.add("gone");

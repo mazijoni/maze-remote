@@ -74,6 +74,10 @@ Open `http://<pi-ip>:8080` and sign in with `MR_PASSWORD`.
 | `amf` | AMD | |
 | `qsv` | Intel | |
 
+**Sleeping screens:** when you connect, the agent wakes sleeping monitors and keeps them (and the PC) awake until you disconnect; if capture drops because a display slept, it recovers by itself. Two Windows settings still matter:
+- *Settings → System → Power → Screen and sleep*: let the **screen** turn off, but set **"put my device to sleep"** to **Never** — a sleeping PC is offline.
+- *Settings → Accounts → Sign-in options → "If you've been away, when should Windows require you to sign in again?"* → **Never**. Windows doesn't let normal programs capture the lock screen.
+
 **Multiple monitors:** in a session, the screen button in the toolbar lists every monitor plus **All screens** (all of them stitched together the way they're arranged on your desk). The website remembers your choice per PC. To pick the starting screen on the agent side, set `"monitor": 1` (second screen) or `"monitor": -1` (all screens).
 
 Other flags: `-test` streams a test pattern (two fake screens) and only logs input.

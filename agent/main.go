@@ -376,6 +376,11 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 				}
 				s.quality = "auto"
 				s.level = autoLevel(s)
+				// Monitors asleep? Wake them first — screen capture fails on a sleeping display.
+				if wakeDisplays() {
+					time.Sleep(800 * time.Millisecond)
+				}
+				keepAwake(true)
 				if err := a.restartCapture(s); err != nil {
 					log.Printf("capture failed: %v", err)
 					a.send(wsMsg{Type: "bye", To: s.client, Sid: s.sid})
@@ -454,7 +459,67 @@ func (a *Agent) restartCapture(s *Session) error {
 	}
 	s.cap = capt
 	s.started = time.Now()
+	go a.watch(s, capt)
 	return nil
+}
+
+// watch restarts capture if ffmpeg dies on its own — typically because the
+// monitors were asleep or just woke up, which interrupts screen duplication.
+func (a *Agent) watch(s *Session, capt *Capture) {
+	<-capt.Done()
+	if !capt.Crashed() {
+		return
+	}
+	for attempt := 1; ; attempt++ {
+		a.mu.Lock()
+		alive := a.sess == s && (s.cap == capt || s.cap == nil)
+		dc := s.dc
+		a.mu.Unlock()
+		if !alive {
+			return
+		}
+		if attempt == 1 {
+			log.Printf("screen capture stopped — waking the displays and retrying")
+		}
+		a.status(dc, "Waking the screen…")
+		wakeDisplays()
+		time.Sleep(time.Duration(min(attempt, 5)) * time.Second)
+		a.mu.Lock()
+		still := a.sess == s && (s.cap == capt || s.cap == nil)
+		a.mu.Unlock()
+		if !still {
+			return
+		}
+		if err := a.restartCapture(s); err == nil {
+			// restartCapture started a new watcher; see if it survives a moment
+			time.Sleep(1500 * time.Millisecond)
+			a.mu.Lock()
+			cur := s.cap
+			a.mu.Unlock()
+			if cur != nil {
+				select {
+				case <-cur.Done():
+					if !cur.Crashed() {
+						return
+					}
+					capt = cur // crashed again: keep trying from here
+					continue
+				default:
+					a.status(dc, "")
+					return
+				}
+			}
+		}
+	}
+}
+
+// status shows a short message on the viewer's screen ("" clears it).
+func (a *Agent) status(dc *webrtc.DataChannel, msg string) {
+	if dc == nil {
+		return
+	}
+	b, _ := json.Marshal(map[string]any{"t": "status", "s": msg})
+	_ = dc.SendText(string(b))
 }
 
 // keyframe answers a picture-loss report, at most every 2 seconds.
@@ -543,6 +608,7 @@ func screenLabel(ss []Screen, sel int) string {
 }
 
 func (a *Agent) closeSession(reason string) {
+	defer keepAwake(false)
 	a.mu.Lock()
 	s := a.sess
 	a.sess = nil
