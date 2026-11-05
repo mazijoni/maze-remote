@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#16111e">
+  <title>Maze Remote</title>
+  <link rel="icon" href="logo.svg" type="image/svg+xml">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="glow glow-a" aria-hidden="true"></div>
+  <div class="glow glow-b" aria-hidden="true"></div>
+
+  <!-- ============ LOGIN ============ -->
+  <main id="view-login" class="view" hidden>
+    <section class="login-card">
+      <div class="brand brand-lg">
+        <img src="logo.svg" alt="" class="brand-mark">
+        <span class="wordmark">MAZE<span class="us">_</span>REMOTE</span>
+      </div>
+      <p class="eyebrow">Remote desktop · in your browser</p>
+      <h1 class="login-title">Your PC, <span class="accent">anywhere.</span></h1>
+      <p class="muted">Sign in to the server running on your Pi to see your machines.</p>
+
+      <form id="login-form" class="form" autocomplete="on">
+        <label class="field">
+          <span>Server</span>
+          <input id="login-server" type="url" placeholder="http://raspberrypi.local:8080" required spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <input id="login-password" type="password" placeholder="••••••••" required autocomplete="current-password">
+        </label>
+        <p id="login-error" class="form-error" role="alert"></p>
+        <div class="form-actions">
+          <button class="btn btn-primary" type="submit"><span>Sign in</span></button>
+          <button class="btn btn-ghost" type="button" id="btn-demo">Try the demo</button>
+        </div>
+      </form>
+    </section>
+    <p class="login-foot">A <a href="https://github.com/mazijoni" target="_blank" rel="noopener">MAZE_DEVELOPMENT</a> project</p>
+  </main>
+
+  <!-- ============ DASHBOARD ============ -->
+  <div id="view-dash" class="view" hidden>
+    <header class="navbar">
+      <div class="brand">
+        <img src="logo.svg" alt="" class="brand-mark">
+        <span class="wordmark">MAZE<span class="us">_</span>REMOTE</span>
+      </div>
+      <div class="nav-right">
+        <span id="conn-pill" class="pill"><i class="dot"></i><span>Connecting…</span></span>
+        <button class="icon-btn" id="btn-settings" title="Settings" aria-label="Settings">
+          <svg viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z"/></svg>
+        </button>
+        <button class="btn btn-ghost btn-sm" id="btn-logout">Sign out</button>
+      </div>
+    </header>
+
+    <main class="dash">
+      <div class="dash-head">
+        <div>
+          <p class="eyebrow">Your machines</p>
+          <h2 class="dash-title">Pick a PC to <span class="accent">control</span></h2>
+        </div>
+        <button class="btn btn-primary" id="btn-add"><span>+ Add a machine</span></button>
+      </div>
+      <div id="host-grid" class="host-grid" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <!-- ============ SESSION ============ -->
+  <section id="session" class="session" hidden>
+    <div class="stage" id="stage" tabindex="0">
+      <video id="remote-video" autoplay playsinline muted></video>
+      <div class="stage-overlay" id="stage-overlay">
+        <div class="spinner"></div>
+        <p id="stage-status">Connecting…</p>
+      </div>
+    </div>
+
+    <div class="toolbar" id="toolbar">
+      <div class="tb-left">
+        <span class="tb-dot"></span>
+        <strong id="sess-name">—</strong>
+        <span class="tb-stats" id="sess-stats"></span>
+      </div>
+      <div class="tb-actions">
+        <button class="tb-btn" id="tb-keys" title="Send keys" aria-label="Send keys">
+          <svg viewBox="0 0 24 24"><rect x="2" y="6" width="20" height="12" rx="2"/><path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M7 14h10"/></svg>
+        </button>
+        <button class="tb-btn" id="tb-paste" title="Type text" aria-label="Type text">
+          <svg viewBox="0 0 24 24"><rect x="8" y="2" width="8" height="4" rx="1"/><path d="M16 4h2a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h2"/></svg>
+        </button>
+        <button class="tb-btn" id="tb-info" title="Session info" aria-label="Session info">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4M12 8h.01"/></svg>
+        </button>
+        <button class="tb-btn" id="tb-full" title="Fullscreen" aria-label="Fullscreen">
+          <svg viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3M21 8V5a2 2 0 0 0-2-2h-3M3 16v3a2 2 0 0 0 2 2h3M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+        </button>
+        <button class="tb-btn tb-danger" id="tb-close" title="Disconnect" aria-label="Disconnect">
+          <svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
+      </div>
+    </div>
+    <button class="toolbar-handle" id="toolbar-handle" aria-label="Show toolbar"></button>
+
+    <!-- send-keys popover -->
+    <div class="popover" id="keys-pop" hidden>
+      <button data-combo="MetaLeft">Windows key</button>
+      <button data-combo="AltLeft+Tab">Alt + Tab</button>
+      <button data-combo="ControlLeft+ShiftLeft+Escape">Task Manager</button>
+      <button data-combo="MetaLeft+KeyD">Show desktop</button>
+      <button data-combo="MetaLeft+KeyL">Lock PC</button>
+      <button data-combo="AltLeft+F4">Alt + F4</button>
+      <button data-combo="PrintScreen">Print Screen</button>
+    </div>
+
+    <!-- info drawer -->
+    <aside class="drawer" id="info-drawer" hidden>
+      <div class="drawer-head">
+        <p class="eyebrow">Session</p>
+        <button class="icon-btn" data-close-drawer aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <dl class="info-list" id="info-list"></dl>
+      <p class="eyebrow mt">Tips</p>
+      <ul class="tips">
+        <li>Click the screen to start sending your keyboard.</li>
+        <li>Fullscreen captures system keys like <kbd>Alt</kbd>+<kbd>Tab</kbd> (Chrome / Edge).</li>
+        <li>Move the mouse to the top edge to bring the toolbar back.</li>
+      </ul>
+    </aside>
+  </section>
+
+  <!-- ============ MODALS ============ -->
+  <div class="modal-root" id="modal-root" hidden>
+    <div class="scrim" data-close-modal></div>
+
+    <div class="modal" id="modal-add" role="dialog" aria-labelledby="add-title" hidden>
+      <div class="modal-head">
+        <div><p class="eyebrow">Setup</p><h3 id="add-title">Add a machine</h3></div>
+        <button class="icon-btn" data-close-modal aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <ol class="steps">
+        <li><strong>Install ffmpeg</strong> on the PC: <code>winget install Gyan.FFmpeg</code></li>
+        <li><strong>Download the agent</strong> (<code>maze-remote-agent.exe</code>) from the GitHub releases.</li>
+        <li><strong>Create <code>maze-remote.json</code></strong> next to it:
+          <pre id="add-config"></pre>
+          <button class="btn btn-ghost btn-sm" id="btn-copy-config">Copy</button>
+        </li>
+        <li><strong>Run the agent.</strong> The PC appears here within a few seconds.</li>
+      </ol>
+      <p class="muted small">Using an NVIDIA GPU? Set <code>"encoder": "nvenc"</code> for lower latency. AMD: <code>"amf"</code>, Intel: <code>"qsv"</code>.</p>
+    </div>
+
+    <div class="modal" id="modal-settings" role="dialog" aria-labelledby="settings-title" hidden>
+      <div class="modal-head">
+        <div><p class="eyebrow">Preferences</p><h3 id="settings-title">Settings</h3></div>
+        <button class="icon-btn" data-close-modal aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <div class="form">
+        <label class="toggle"><input type="checkbox" id="set-scroll-invert"><span class="track"></span><span>Invert scroll direction</span></label>
+        <label class="toggle"><input type="checkbox" id="set-autohide" checked><span class="track"></span><span>Auto-hide session toolbar</span></label>
+        <label class="toggle"><input type="checkbox" id="set-motion"><span class="track"></span><span>Reduce animations</span></label>
+        <div class="kv"><span>Server</span><code id="set-server">—</code></div>
+      </div>
+    </div>
+
+    <div class="modal" id="modal-paste" role="dialog" aria-labelledby="paste-title" hidden>
+      <div class="modal-head">
+        <div><p class="eyebrow">Keyboard</p><h3 id="paste-title">Type text on the remote PC</h3></div>
+        <button class="icon-btn" data-close-modal aria-label="Close"><svg viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+      </div>
+      <textarea id="paste-text" rows="5" placeholder="Paste or write something…"></textarea>
+      <div class="form-actions"><button class="btn btn-primary" id="btn-send-text"><span>Type it</span></button></div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <template id="tpl-host">
+    <article class="host-card">
+      <div class="host-screen">
+        <svg class="host-os" viewBox="0 0 24 24"></svg>
+      </div>
+      <div class="host-body">
+        <div class="host-meta">
+          <h3 class="host-name"></h3>
+          <p class="host-sub"></p>
+        </div>
+        <button class="btn btn-primary btn-sm host-connect"><span>Connect</span></button>
+      </div>
+    </article>
+  </template>
+
+  <script src="app.js" type="module"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "server": "ws://raspberrypi.local:8080/ws",
+  "secret": "PASTE_YOUR_HOST_SECRET_HERE",
+  "name": "My PC",
+  "encoder": "x264",
+  "fps": 60,
+  "bitrate": "8M",
+  "monitor": 0
+}

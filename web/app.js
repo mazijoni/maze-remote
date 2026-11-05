@@ -1,0 +1,770 @@
+// Maze Remote — web client
+// Talks to the signaling server over WebSocket, then receives the host's screen
+// over WebRTC and sends mouse/keyboard input back on a data channel.
+
+const $ = (s, el = document) => el.querySelector(s);
+const $$ = (s, el = document) => [...el.querySelectorAll(s)];
+
+// ---------------- storage ----------------
+const store = {
+  get(k, d = null) { try { const v = localStorage.getItem("mr:" + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem("mr:" + k, JSON.stringify(v)); } catch {} },
+  del(k) { try { localStorage.removeItem("mr:" + k); } catch {} },
+};
+
+const prefs = Object.assign({ invertScroll: false, autoHide: true, reduceMotion: false }, store.get("prefs", {}));
+const savePrefs = () => store.set("prefs", prefs);
+
+// ---------------- motion ----------------
+const reducedMotion = () => prefs.reduceMotion || matchMedia("(prefers-reduced-motion: reduce)").matches;
+const EASE_OUT = "cubic-bezier(0.22, 1, 0.36, 1)";
+const EASE_IN = "cubic-bezier(0.55, 0, 1, 0.45)";
+const SPRING = "cubic-bezier(0.34, 1.56, 0.64, 1)";
+
+function animate(el, frames, opts) {
+  if (!el) return Promise.resolve();
+  if (reducedMotion()) opts = { ...opts, duration: 1 };
+  const a = el.animate(frames, { fill: "both", ...opts });
+  return a.finished.then(() => a).catch(() => a);
+}
+
+// open/close an element with a matching pair of animations
+const motions = {
+  modal: {
+    in: [{ opacity: 0, transform: "translateY(24px) scale(.94)", filter: "blur(6px)" }, { opacity: 1, transform: "none", filter: "blur(0)" }],
+    inOpts: { duration: 520, easing: EASE_OUT },
+    out: [{ opacity: 1, transform: "none", filter: "blur(0)" }, { opacity: 0, transform: "translateY(16px) scale(.96)", filter: "blur(4px)" }],
+    outOpts: { duration: 260, easing: EASE_IN },
+  },
+  pop: {
+    in: [{ opacity: 0, transform: "translate(-50%, -8px) scale(.92)" }, { opacity: 1, transform: "translate(-50%, 0) scale(1)" }],
+    inOpts: { duration: 380, easing: SPRING },
+    out: [{ opacity: 1, transform: "translate(-50%, 0) scale(1)" }, { opacity: 0, transform: "translate(-50%, -6px) scale(.95)" }],
+    outOpts: { duration: 180, easing: EASE_IN },
+  },
+  drawer: {
+    in: [{ transform: "translateX(100%)", opacity: 0.4 }, { transform: "none", opacity: 1 }],
+    inOpts: { duration: 480, easing: EASE_OUT },
+    out: [{ transform: "none", opacity: 1 }, { transform: "translateX(100%)", opacity: 0.4 }],
+    outOpts: { duration: 280, easing: EASE_IN },
+  },
+  view: {
+    in: [{ opacity: 0, transform: "translateY(20px)" }, { opacity: 1, transform: "none" }],
+    inOpts: { duration: 600, easing: EASE_OUT },
+    out: [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(-12px)" }],
+    outOpts: { duration: 260, easing: EASE_IN },
+  },
+};
+
+async function openEl(el, kind) {
+  el.hidden = false;
+  const m = motions[kind];
+  await animate(el, m.in, m.inOpts);
+}
+async function closeEl(el, kind) {
+  if (el.hidden) return;
+  const m = motions[kind];
+  await animate(el, m.out, m.outOpts);
+  el.hidden = true;
+  el.getAnimations().forEach((a) => a.cancel());
+}
+
+// ---------------- toasts ----------------
+function toast(msg, kind = "") {
+  const t = document.createElement("div");
+  t.className = "toast " + kind;
+  t.textContent = msg;
+  $("#toasts").append(t);
+  animate(t, [{ opacity: 0, transform: "translateY(20px) scale(.9)" }, { opacity: 1, transform: "none" }], { duration: 420, easing: SPRING });
+  setTimeout(async () => {
+    await animate(t, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateY(10px) scale(.95)" }], { duration: 240, easing: EASE_IN });
+    t.remove();
+  }, 3400);
+}
+
+// ---------------- views ----------------
+let currentView = null;
+async function showView(id) {
+  const next = $("#" + id);
+  if (currentView === next) return;
+  if (currentView) await closeEl(currentView, "view");
+  currentView = next;
+  await openEl(next, "view");
+}
+
+// ---------------- modals ----------------
+let openModalEl = null;
+async function openModal(id) {
+  const root = $("#modal-root");
+  if (openModalEl) await closeModal(true);
+  root.hidden = false;
+  openModalEl = $("#" + id);
+  animate($(".scrim", root), [{ opacity: 0 }, { opacity: 1 }], { duration: 300, easing: "ease-out" });
+  await openEl(openModalEl, "modal");
+  const f = $("textarea, input:not([type=checkbox])", openModalEl);
+  if (f) f.focus();
+}
+async function closeModal(keepScrim = false) {
+  if (!openModalEl) return;
+  const root = $("#modal-root");
+  const el = openModalEl;
+  openModalEl = null;
+  if (!keepScrim) animate($(".scrim", root), [{ opacity: 1 }, { opacity: 0 }], { duration: 260, easing: "ease-in" });
+  await closeEl(el, "modal");
+  if (!keepScrim && !openModalEl) root.hidden = true;
+  if (session) $("#stage").focus();
+}
+$("#modal-root").addEventListener("click", (e) => { if (e.target.closest("[data-close-modal]")) closeModal(); });
+
+// ---------------- app state ----------------
+const state = {
+  demo: false,
+  server: store.get("server", ""),
+  token: store.get("token", ""),
+  ice: store.get("ice", [{ urls: "stun:stun.l.google.com:19302" }]),
+  ws: null,
+  hosts: [],
+  wsRetry: 0,
+};
+let session = null;
+
+const isServedByServer = () => location.protocol.startsWith("http") && !location.hostname.endsWith("github.io");
+const wsURL = (server) => server.replace(/^http/, "ws").replace(/\/$/, "") + "/ws";
+
+function setConn(kind, text) {
+  const p = $("#conn-pill");
+  p.className = "pill " + kind;
+  $("span", p).textContent = text;
+}
+
+// ---------------- login ----------------
+function initLogin() {
+  const srv = $("#login-server");
+  srv.value = state.server || (isServedByServer() ? location.origin : "");
+  $("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const btn = $("button[type=submit]", e.target);
+    const err = $("#login-error");
+    err.textContent = "";
+    let server = srv.value.trim().replace(/\/$/, "");
+    if (!/^https?:\/\//.test(server)) server = "http://" + server;
+
+    if (location.protocol === "https:" && server.startsWith("http:") && !/\/\/(localhost|127\.0\.0\.1)/.test(server)) {
+      err.textContent = "This page is HTTPS, so browsers block plain-http servers. Open the site from your Pi instead (" + server + "), or put the Pi behind HTTPS (see README).";
+      shake($(".login-card"));
+      return;
+    }
+
+    btn.classList.add("loading");
+    btn.disabled = true;
+    try {
+      const r = await fetch(server + "/api/login", {
+        method: "POST", headers: { "content-type": "application/json" },
+        body: JSON.stringify({ password: $("#login-password").value }),
+      });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(j.error || "Login failed (" + r.status + ")");
+      Object.assign(state, { server, token: j.token, ice: j.ice || state.ice, demo: false });
+      store.set("server", server); store.set("token", j.token); store.set("ice", state.ice);
+      $("#login-password").value = "";
+      enterDashboard();
+    } catch (ex) {
+      err.textContent = ex.message === "Failed to fetch" ? "Couldn't reach the server. Is it running, and is the address right?" : ex.message;
+      shake($(".login-card"));
+    } finally {
+      btn.classList.remove("loading");
+      btn.disabled = false;
+    }
+  });
+  $("#btn-demo").addEventListener("click", () => { state.demo = true; enterDashboard(); });
+}
+
+function shake(el) { el.classList.remove("shake"); void el.offsetWidth; el.classList.add("shake"); }
+
+// ---------------- dashboard ----------------
+async function enterDashboard() {
+  await showView("view-dash");
+  $("#set-server").textContent = state.demo ? "Demo mode" : state.server;
+  if (state.demo) {
+    setConn("demo", "Demo mode");
+    renderHosts(DEMO_HOSTS, true);
+  } else {
+    renderHosts(null, true);
+    connectSignaling();
+  }
+}
+
+function logout() {
+  if (session) endSession("signed out");
+  if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
+  store.del("token");
+  Object.assign(state, { token: "", demo: false, hosts: [] });
+  showView("view-login");
+}
+$("#btn-logout").addEventListener("click", logout);
+$("#btn-settings").addEventListener("click", () => openModal("modal-settings"));
+$("#btn-add").addEventListener("click", openAddModal);
+
+window.addEventListener("scroll", () => $(".navbar").classList.toggle("scrolled", scrollY > 10), { passive: true });
+
+const OS_ICONS = {
+  windows: '<path d="M3 5.5 10.5 4.5v7H3zM12.5 4.2 21 3v8.5h-8.5zM3 12.5h7.5v7L3 18.5zM12.5 12.5H21V21l-8.5-1.2z"/>',
+  linux: '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="m7 9 3 3-3 3M12 15h5"/>',
+  darwin: '<rect x="4" y="4" width="16" height="11" rx="2"/><path d="M2 19h20"/>',
+  default: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+};
+
+function ago(ts) {
+  const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
+  if (s < 60) return "just now";
+  const m = Math.round(s / 60); if (m < 60) return m + " min";
+  const h = Math.round(m / 60); if (h < 48) return h + " h";
+  return Math.round(h / 24) + " days";
+}
+
+function renderHosts(hosts, animateIn = false) {
+  const grid = $("#host-grid");
+  if (hosts) state.hosts = hosts;
+  const list = state.hosts;
+  const known = new Set($$(".host-card", grid).map((c) => c.dataset.id));
+  grid.innerHTML = "";
+
+  if (!hosts && !state.demo && list.length === 0) {
+    grid.innerHTML = '<div class="empty"><div class="spinner" style="margin:0 auto 16px"></div><p>Looking for machines…</p></div>';
+    return;
+  }
+  if (list.length === 0) {
+    grid.innerHTML = '<div class="empty"><h3>No machines online yet</h3><p>Run the agent on a PC and it shows up here automatically.</p><button class="btn btn-primary">Set up a machine</button></div>';
+    $(".empty .btn", grid).addEventListener("click", openAddModal);
+    return;
+  }
+  list.forEach((h, i) => {
+    const card = $("#tpl-host").content.firstElementChild.cloneNode(true);
+    card.dataset.id = h.id;
+    const online = h.online !== false;
+    card.classList.add(online ? (h.busy ? "busy" : "online") : "offline");
+    $(".host-os", card).innerHTML = OS_ICONS[h.os] || OS_ICONS.default;
+    $(".host-name", card).textContent = h.name;
+    const sub = !online ? "Offline" : h.busy ? "In use" : "Online · " + ago(h.since);
+    $(".host-sub", card).innerHTML = '<i class="dot"></i>' + sub;
+    const btn = $(".host-connect", card);
+    if (!online) { btn.disabled = true; btn.querySelector("span").textContent = "Offline"; }
+    else card.addEventListener("click", () => startSession(h, card));
+    if (animateIn || !known.has(h.id)) {
+      card.classList.add("enter");
+      card.style.animationDelay = (animateIn ? i * 70 : 0) + "ms";
+    }
+    grid.append(card);
+  });
+}
+
+function openAddModal() {
+  const server = state.demo ? "ws://raspberrypi.local:8080/ws" : wsURL(state.server);
+  $("#add-config").textContent = JSON.stringify({ server, secret: "YOUR_HOST_SECRET", name: "My PC", encoder: "x264", fps: 60, bitrate: "8M" }, null, 2);
+  openModal("modal-add");
+}
+$("#btn-copy-config").addEventListener("click", async () => {
+  try { await navigator.clipboard.writeText($("#add-config").textContent); toast("Config copied", "ok"); }
+  catch { toast("Couldn't copy — select it manually", "bad"); }
+});
+
+// ---------------- signaling ----------------
+function connectSignaling() {
+  if (state.ws) { state.ws.onclose = null; state.ws.close(); }
+  setConn("warn", "Connecting…");
+  const ws = new WebSocket(wsURL(state.server));
+  state.ws = ws;
+  ws.onopen = () => ws.send(JSON.stringify({ type: "client-hello", token: state.token }));
+  ws.onmessage = (e) => {
+    let m; try { m = JSON.parse(e.data); } catch { return; }
+    switch (m.type) {
+      case "welcome":
+        state.wsRetry = 0;
+        if (m.ice) state.ice = m.ice;
+        setConn("ok", "Server connected");
+        renderHosts(m.hosts || [], true);
+        break;
+      case "hosts":
+        renderHosts(m.hosts || []);
+        break;
+      case "auth-failed":
+        ws.onclose = null;
+        toast("Session expired — sign in again", "bad");
+        logout();
+        break;
+      case "signal":
+        if (session && session.sid === m.sid) session.onSignal(m.data);
+        break;
+      case "bye":
+        if (session && session.sid === m.sid) endSession("The host ended the session");
+        break;
+      case "error":
+        if (session && session.sid === m.sid) endSession(m.error || "Connection failed");
+        else toast(m.error || "Error", "bad");
+        break;
+    }
+  };
+  ws.onclose = () => {
+    if (state.ws !== ws) return;
+    setConn("warn", "Reconnecting…");
+    const delay = Math.min(1000 * 2 ** state.wsRetry++, 15000);
+    setTimeout(() => { if (state.ws === ws && state.token) connectSignaling(); }, delay);
+  };
+}
+
+function sendSignal(msg) {
+  if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify(msg));
+}
+
+// ---------------- session ----------------
+const sessEl = $("#session");
+const video = $("#remote-video");
+const stage = $("#stage");
+
+function cardClip(card) {
+  if (!card || !card.isConnected) return null;
+  const r = card.getBoundingClientRect();
+  const W = innerWidth, H = innerHeight;
+  return `inset(${r.top}px ${W - r.right}px ${H - r.bottom}px ${r.left}px round 18px)`;
+}
+
+async function startSession(host, card) {
+  if (session) return;
+  session = state.demo ? new DemoSession(host) : new RtcSession(host);
+  session.card = card;
+  $("#sess-name").textContent = host.name;
+  $("#sess-stats").textContent = "";
+  $("#stage-status").textContent = "Connecting to " + host.name + "…";
+  $("#stage-overlay").classList.remove("gone");
+  $("#info-drawer").hidden = true;
+  $("#keys-pop").hidden = true;
+  sessEl.hidden = false;
+  document.body.style.overflow = "hidden";
+
+  const from = cardClip(card);
+  const anim = from
+    ? animate(sessEl, [{ clipPath: from, opacity: 0.6 }, { clipPath: "inset(0px 0px 0px 0px round 0px)", opacity: 1 }], { duration: 650, easing: EASE_OUT })
+    : animate(sessEl, [{ opacity: 0, transform: "scale(1.04)" }, { opacity: 1, transform: "none" }], { duration: 450, easing: EASE_OUT });
+  animate($("#toolbar"), [{ opacity: 0, transform: "translate(-50%, -30px)" }, { opacity: 1, transform: "translate(-50%, 0)" }], { duration: 500, delay: 350, easing: SPRING })
+    .then((a) => a.cancel());
+  showToolbar();
+  session.start();
+  await anim;
+  sessEl.getAnimations().forEach((a) => a.cancel());
+  stage.focus();
+}
+
+async function endSession(reason) {
+  const s = session;
+  if (!s) return;
+  session = null;
+  s.stop();
+  releaseAllKeys();
+  if (document.fullscreenElement) await document.exitFullscreen().catch(() => {});
+  if (!$("#info-drawer").hidden) closeEl($("#info-drawer"), "drawer");
+  if (!$("#keys-pop").hidden) closeEl($("#keys-pop"), "pop");
+
+  // the card may have been re-rendered: find it again by id
+  const card = $(`.host-card[data-id="${CSS.escape(s.host.id)}"]`);
+  const to = cardClip(card);
+  if (to) await animate(sessEl, [{ clipPath: "inset(0px 0px 0px 0px round 0px)", opacity: 1 }, { clipPath: to, opacity: 0.4 }], { duration: 520, easing: "cubic-bezier(0.65, 0, 0.35, 1)" });
+  else await animate(sessEl, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.97)" }], { duration: 300, easing: EASE_IN });
+
+  sessEl.hidden = true;
+  sessEl.getAnimations().forEach((a) => a.cancel());
+  video.srcObject = null;
+  document.body.style.overflow = "";
+  if (reason) toast(reason, reason.startsWith("Disconnected") ? "" : "bad");
+  if (card) { card.classList.remove("enter"); void card.offsetWidth; card.classList.add("enter"); card.style.animationDelay = "0ms"; }
+}
+
+function onVideoReady() {
+  $("#stage-overlay").classList.add("gone");
+}
+
+class RtcSession {
+  constructor(host) {
+    this.host = host;
+    this.sid = crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2);
+    this.dc = null;
+    this.pc = null;
+    this.statsTimer = null;
+    this.lastBytes = 0;
+    this.lastTs = 0;
+    this.info = {};
+  }
+  start() {
+    const pc = (this.pc = new RTCPeerConnection({ iceServers: state.ice }));
+    const tr = pc.addTransceiver("video", { direction: "recvonly" });
+    // Prefer H.264 (what the agent sends)
+    try {
+      const caps = RTCRtpReceiver.getCapabilities("video");
+      const h264 = caps.codecs.filter((c) => /h264/i.test(c.mimeType));
+      if (h264.length) tr.setCodecPreferences(h264);
+    } catch {}
+    this.dc = pc.createDataChannel("input", { ordered: true });
+    this.dc.onmessage = (e) => {
+      try { const m = JSON.parse(e.data); if (m.t === "hello") this.info = m; } catch {}
+    };
+    pc.ontrack = (e) => {
+      try { e.receiver.playoutDelayHint = 0; e.receiver.jitterBufferTarget = 0; } catch {}
+      video.srcObject = e.streams[0] || new MediaStream([e.track]);
+      video.play().catch(() => {});
+    };
+    pc.onicecandidate = (e) => { if (e.candidate) sendSignal({ type: "signal", to: this.host.id, sid: this.sid, data: { candidate: e.candidate.toJSON() } }); };
+    pc.onconnectionstatechange = () => {
+      const st = pc.connectionState;
+      if (st === "connecting") $("#stage-status").textContent = "Establishing a direct connection…";
+      if (st === "failed") endSession("Couldn't connect directly to the host (a TURN server may be needed)");
+      if (st === "disconnected") $("#stage-status").textContent = "Connection interrupted…";
+    };
+    (async () => {
+      await pc.setLocalDescription(await pc.createOffer());
+      sendSignal({ type: "signal", to: this.host.id, sid: this.sid, data: { sdp: pc.localDescription } });
+    })().catch((e) => endSession("Couldn't start: " + e.message));
+
+    this.connectTimer = setTimeout(() => { if (session === this && video.readyState < 2) endSession("Timed out waiting for the host"); }, 20000);
+    this.statsTimer = setInterval(() => this.stats(), 1000);
+  }
+  async onSignal(d) {
+    if (!d) return;
+    try {
+      if (d.sdp) await this.pc.setRemoteDescription(d.sdp);
+      else if (d.candidate) await this.pc.addIceCandidate(d.candidate);
+    } catch (e) { console.warn(e); }
+  }
+  send(ev) { if (this.dc && this.dc.readyState === "open") this.dc.send(JSON.stringify(ev)); }
+  async stats() {
+    if (!this.pc) return;
+    const rep = await this.pc.getStats();
+    let fps = 0, bytes = 0, rtt = null, w = 0, h = 0, codec = "", local = "", remote = "";
+    const byId = new Map(); rep.forEach((r) => byId.set(r.id, r));
+    rep.forEach((r) => {
+      if (r.type === "inbound-rtp" && r.kind === "video") {
+        fps = r.framesPerSecond || 0; bytes = r.bytesReceived; w = r.frameWidth; h = r.frameHeight;
+        const c = byId.get(r.codecId); if (c) codec = c.mimeType.split("/")[1];
+      }
+      if (r.type === "candidate-pair" && r.nominated && r.state === "succeeded") {
+        rtt = r.currentRoundTripTime;
+        const l = byId.get(r.localCandidateId), rm = byId.get(r.remoteCandidateId);
+        if (l) local = l.candidateType; if (rm) remote = rm.candidateType;
+      }
+    });
+    const now = performance.now();
+    const mbps = this.lastTs ? ((bytes - this.lastBytes) * 8) / ((now - this.lastTs) * 1000) : 0;
+    this.lastBytes = bytes; this.lastTs = now;
+    const ms = rtt != null ? Math.round(rtt * 1000) + " ms" : "–";
+    $("#sess-stats").textContent = `${Math.round(fps)} fps · ${mbps.toFixed(1)} Mbps · ${ms}`;
+    updateInfo({
+      Host: this.host.name, OS: this.info.os || this.host.os || "–", Agent: this.info.version ? "v" + this.info.version : "–",
+      Encoder: this.info.encoder || "–", Codec: codec || "–", Resolution: w ? `${w}×${h}` : "–",
+      Framerate: Math.round(fps) + " fps", Bitrate: mbps.toFixed(2) + " Mbps", Latency: ms,
+      Route: remote === "relay" || local === "relay" ? "Relayed (TURN)" : local ? "Direct (peer-to-peer)" : "–",
+    });
+  }
+  stop() {
+    clearInterval(this.statsTimer); clearTimeout(this.connectTimer);
+    sendSignal({ type: "bye", to: this.host.id, sid: this.sid });
+    try { this.pc && this.pc.close(); } catch {}
+  }
+}
+
+video.addEventListener("loadeddata", () => { if (session) onVideoReady(); });
+
+function updateInfo(obj) {
+  const dl = $("#info-list");
+  dl.innerHTML = Object.entries(obj).map(([k, v]) => `<dt>${k}</dt><dd>${String(v).replace(/</g, "&lt;")}</dd>`).join("");
+}
+
+// ---------------- input ----------------
+function contentRect() {
+  // where the picture actually is inside the <video> (object-fit: contain letterboxing)
+  const r = video.getBoundingClientRect();
+  const vw = video.videoWidth || 16, vh = video.videoHeight || 9;
+  const scale = Math.min(r.width / vw, r.height / vh);
+  const w = vw * scale, h = vh * scale;
+  return { x: r.left + (r.width - w) / 2, y: r.top + (r.height - h) / 2, w, h };
+}
+function norm(e) {
+  const c = contentRect();
+  return { x: Math.min(1, Math.max(0, (e.clientX - c.x) / c.w)), y: Math.min(1, Math.max(0, (e.clientY - c.y) / c.h)) };
+}
+
+let pendingMove = null;
+function flushMove() {
+  if (pendingMove && session) session.send({ t: "mm", ...pendingMove });
+  pendingMove = null;
+}
+stage.addEventListener("pointermove", (e) => {
+  if (!session) return;
+  if (!pendingMove) requestAnimationFrame(flushMove);
+  pendingMove = norm(e);
+});
+stage.addEventListener("pointerdown", (e) => {
+  if (!session) return;
+  stage.focus();
+  stage.setPointerCapture(e.pointerId);
+  session.send({ t: "md", b: e.button, ...norm(e) });
+  e.preventDefault();
+});
+stage.addEventListener("pointerup", (e) => { if (session) session.send({ t: "mu", b: e.button, ...norm(e) }); });
+stage.addEventListener("contextmenu", (e) => e.preventDefault());
+stage.addEventListener("auxclick", (e) => e.preventDefault());
+stage.addEventListener("wheel", (e) => {
+  if (!session) return;
+  e.preventDefault();
+  const k = e.deltaMode === 1 ? 33 : e.deltaMode === 2 ? 400 : 1;
+  const inv = prefs.invertScroll ? -1 : 1;
+  session.send({ t: "wh", dx: e.deltaX * k * inv, dy: e.deltaY * k * inv });
+}, { passive: false });
+
+const held = new Set();
+function keyHandler(e) {
+  if (!session || openModalEl || document.activeElement !== stage) return;
+  if (!e.code) return;
+  e.preventDefault();
+  if (e.type === "keydown") { held.add(e.code); session.send({ t: "kd", c: e.code }); }
+  else { held.delete(e.code); session.send({ t: "ku", c: e.code }); }
+}
+document.addEventListener("keydown", keyHandler);
+document.addEventListener("keyup", keyHandler);
+function releaseAllKeys() {
+  for (const c of held) session && session.send({ t: "ku", c });
+  held.clear();
+}
+window.addEventListener("blur", releaseAllKeys);
+stage.addEventListener("blur", releaseAllKeys);
+
+async function sendCombo(combo) {
+  if (!session) return;
+  const keys = combo.split("+");
+  for (const c of keys) { session.send({ t: "kd", c }); await new Promise((r) => setTimeout(r, 30)); }
+  for (const c of keys.reverse()) { session.send({ t: "ku", c }); await new Promise((r) => setTimeout(r, 30)); }
+  toast("Sent " + combo.replace(/Left|Key/g, "").replace(/\+/g, " + ").replace("Meta", "Win"));
+}
+
+// ---------------- toolbar ----------------
+let hideTimer = null;
+function showToolbar() {
+  $("#toolbar").classList.remove("tucked");
+  clearTimeout(hideTimer);
+  if (prefs.autoHide) hideTimer = setTimeout(() => {
+    if (!$("#keys-pop").hidden || $("#toolbar").matches(":hover")) return showToolbar();
+    $("#toolbar").classList.add("tucked");
+  }, 2600);
+}
+sessEl.addEventListener("pointermove", (e) => { if (e.clientY < 70) showToolbar(); });
+$("#toolbar").addEventListener("pointerenter", showToolbar);
+$("#toolbar-handle").addEventListener("pointerenter", showToolbar);
+
+$("#tb-close").addEventListener("click", () => endSession("Disconnected"));
+$("#tb-full").addEventListener("click", async () => {
+  if (document.fullscreenElement) { await document.exitFullscreen(); return; }
+  try {
+    await sessEl.requestFullscreen({ navigationUI: "hide" });
+    if (navigator.keyboard && navigator.keyboard.lock) await navigator.keyboard.lock();
+  } catch {}
+  stage.focus();
+});
+document.addEventListener("fullscreenchange", () => $("#tb-full").classList.toggle("on", !!document.fullscreenElement));
+
+$("#tb-keys").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const pop = $("#keys-pop");
+  if (pop.hidden) { $("#tb-keys").classList.add("on"); await openEl(pop, "pop"); }
+  else { $("#tb-keys").classList.remove("on"); await closeEl(pop, "pop"); }
+});
+$("#keys-pop").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-combo]");
+  if (!b) return;
+  $("#tb-keys").classList.remove("on");
+  await closeEl($("#keys-pop"), "pop");
+  sendCombo(b.dataset.combo);
+  stage.focus();
+});
+document.addEventListener("pointerdown", (e) => {
+  const pop = $("#keys-pop");
+  if (!pop.hidden && !e.target.closest("#keys-pop, #tb-keys")) { $("#tb-keys").classList.remove("on"); closeEl(pop, "pop"); }
+});
+
+$("#tb-info").addEventListener("click", async () => {
+  const d = $("#info-drawer");
+  if (d.hidden) { $("#tb-info").classList.add("on"); await openEl(d, "drawer"); }
+  else { $("#tb-info").classList.remove("on"); await closeEl(d, "drawer"); }
+});
+$("[data-close-drawer]").addEventListener("click", async () => { $("#tb-info").classList.remove("on"); await closeEl($("#info-drawer"), "drawer"); stage.focus(); });
+
+$("#tb-paste").addEventListener("click", () => openModal("modal-paste"));
+$("#btn-send-text").addEventListener("click", async () => {
+  const s = $("#paste-text").value;
+  if (!s || !session) return;
+  session.send({ t: "text", s });
+  $("#paste-text").value = "";
+  await closeModal();
+  toast("Typed " + s.length + " characters", "ok");
+});
+
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && openModalEl) { e.preventDefault(); closeModal(); }
+});
+
+// ---------------- settings ----------------
+function initSettings() {
+  const bind = (id, key, after) => {
+    const el = $("#" + id);
+    el.checked = prefs[key];
+    el.addEventListener("change", () => { prefs[key] = el.checked; savePrefs(); after && after(); });
+  };
+  bind("set-scroll-invert", "invertScroll");
+  bind("set-autohide", "autoHide", showToolbar);
+  bind("set-motion", "reduceMotion", () => document.documentElement.classList.toggle("reduce-motion", prefs.reduceMotion));
+  document.documentElement.classList.toggle("reduce-motion", prefs.reduceMotion);
+}
+
+// =====================================================================
+// DEMO MODE — a fake desktop drawn on a canvas, so the UI can be tried
+// on GitHub Pages without a server. Your mouse and typing reach it.
+// =====================================================================
+const DEMO_HOSTS = [
+  { id: "demo-maze-pc", name: "MAZE-PC", os: "windows", since: Date.now() - 1000 * 60 * 47 },
+  { id: "demo-studio", name: "Studio Laptop", os: "windows", since: Date.now() - 1000 * 60 * 60 * 5, busy: false },
+  { id: "demo-pi", name: "raspberrypi", os: "linux", since: Date.now() - 1000 * 60 * 60 * 26 },
+  { id: "demo-old", name: "Old Tower", os: "windows", online: false },
+];
+
+class DemoSession {
+  constructor(host) {
+    this.host = host;
+    this.sid = "demo";
+    this.cursor = { x: 0.5, y: 0.5 };
+    this.typed = "";
+    this.down = false;
+    this.ripples = [];
+    this.scroll = 0;
+    this.t0 = performance.now();
+    this.log = ["online as \"" + host.name + "\"", "viewer connecting (session demo)", "peer connection: connected", "▶ streaming to viewer"];
+  }
+  start() {
+    const c = (this.canvas = document.createElement("canvas"));
+    c.width = 1600; c.height = 900;
+    this.ctx = c.getContext("2d");
+    this.draw();
+    const stream = c.captureStream(60);
+    setTimeout(() => {
+      if (session !== this) return;
+      video.srcObject = stream;
+      video.play().catch(() => {});
+    }, 900);
+    this.raf = requestAnimationFrame(this.loop);
+    this.statsTimer = setInterval(() => {
+      const fps = 58 + Math.round(Math.random() * 2), mbps = (3.5 + Math.random() * 1.5).toFixed(1), ms = 2 + Math.round(Math.random() * 3);
+      $("#sess-stats").textContent = `${fps} fps · ${mbps} Mbps · ${ms} ms`;
+      updateInfo({ Host: this.host.name, OS: this.host.os, Agent: "v0.1.0 (demo)", Encoder: "x264", Codec: "H264", Resolution: "1600×900", Framerate: fps + " fps", Bitrate: mbps + " Mbps", Latency: ms + " ms", Route: "Direct (peer-to-peer)" });
+    }, 1000);
+  }
+  loop = () => { this.draw(); this.raf = requestAnimationFrame(this.loop); };
+  onSignal() {}
+  send(ev) {
+    if (ev.t === "mm") Object.assign(this.cursor, { x: ev.x, y: ev.y });
+    else if (ev.t === "md") { this.down = true; this.cursor.x = ev.x ?? this.cursor.x; this.cursor.y = ev.y ?? this.cursor.y; this.ripples.push({ x: this.cursor.x, y: this.cursor.y, t: performance.now(), b: ev.b }); }
+    else if (ev.t === "mu") this.down = false;
+    else if (ev.t === "wh") this.scroll = Math.max(0, this.scroll + ev.dy * 0.4);
+    else if (ev.t === "kd") {
+      const c = ev.c;
+      if (c === "Backspace") this.typed = this.typed.slice(0, -1);
+      else if (c === "Enter") this.typed += "\n";
+      else if (c === "Space") this.typed += " ";
+      else if (c.startsWith("Key")) this.typed += held.has("ShiftLeft") || held.has("ShiftRight") ? c[3] : c[3].toLowerCase();
+      else if (c.startsWith("Digit")) this.typed += c[5];
+      else if (c === "Period") this.typed += ".";
+      else if (c === "Comma") this.typed += ",";
+      else this.log.push("key " + c);
+      if (this.typed.length > 400) this.typed = this.typed.slice(-400);
+    } else if (ev.t === "text") this.typed += ev.s;
+  }
+  stop() { cancelAnimationFrame(this.raf); clearInterval(this.statsTimer); }
+
+  draw() {
+    const g = this.ctx, W = 1600, H = 900, t = (performance.now() - this.t0) / 1000;
+    // wallpaper
+    g.fillStyle = "#0f0b15"; g.fillRect(0, 0, W, H);
+    const orb = (x, y, r, col) => { const gr = g.createRadialGradient(x, y, 0, x, y, r); gr.addColorStop(0, col); gr.addColorStop(1, "rgba(0,0,0,0)"); g.fillStyle = gr; g.fillRect(0, 0, W, H); };
+    orb(1250 + Math.sin(t / 3) * 60, 180 + Math.cos(t / 4) * 40, 620, "rgba(162,53,255,0.55)");
+    orb(250 + Math.cos(t / 5) * 50, 780, 520, "rgba(91,26,168,0.5)");
+    // logo watermark
+    g.save(); g.globalAlpha = 0.18; g.translate(W / 2 - 160, H - 330); g.scale(2.6, 2.6);
+    [[45,5,67,"#C773FF"],[31,19,79,"#fff"],[21,33,39,"#C773FF"],[42,33,89,"#fff"],[19,47,67,"#fff"],[70,47,89,"#C773FF"],[31,61,79,"#fff"],[43,75,65,"#C773FF"]]
+      .forEach(([a, y, b, c]) => { g.fillStyle = c; g.beginPath(); g.moveTo(a, y); g.lineTo(b, y); g.lineTo(b - 5, y + 10); g.lineTo(a - 5, y + 10); g.fill(); });
+    g.restore();
+
+    // window: notepad
+    this.win(g, 120, 90, 640, 380, "notes.txt — Notepad", (x, y, w, h) => {
+      g.fillStyle = "#e9e3f2"; g.font = "500 20px 'JetBrains Mono', monospace";
+      const text = (this.typed || "Click here and type — your keyboard\nreaches this demo PC.") + (Math.floor(t * 2) % 2 ? "▍" : "");
+      let ly = y + 34;
+      text.split("\n").slice(-12).forEach((line) => {
+        const chunks = line.match(/.{1,46}/g) || [""];
+        chunks.forEach((ch) => { g.fillText(ch, x + 20, ly); ly += 28; });
+      });
+    });
+    // window: agent console
+    this.win(g, 860, 150, 620, 330, "maze-remote-agent.exe", (x, y, w, h) => {
+      g.fillStyle = "#0b0810"; g.fillRect(x, y, w, h);
+      g.font = "500 17px 'JetBrains Mono', monospace";
+      this.log.slice(-9).forEach((l, i) => {
+        g.fillStyle = "#6b5f80"; g.fillText("13:0" + (i % 10) , x + 16, y + 32 + i * 30);
+        g.fillStyle = l.startsWith("▶") ? "#4ade80" : "#cfc6dc"; g.fillText(l, x + 86, y + 32 + i * 30);
+      });
+    });
+
+    // taskbar
+    g.fillStyle = "rgba(14,10,20,0.88)"; g.fillRect(0, H - 56, W, 56);
+    g.fillStyle = "rgba(255,255,255,0.08)"; g.fillRect(0, H - 56, W, 1);
+    for (let i = 0; i < 6; i++) {
+      g.fillStyle = i === 0 ? "#a235ff" : "rgba(255,255,255,0.12)";
+      this.round(g, W / 2 - 165 + i * 56, H - 46, 36, 36, 9); g.fill();
+    }
+    const now = new Date();
+    g.fillStyle = "#fff"; g.font = "600 17px Inter, sans-serif"; g.textAlign = "right";
+    g.fillText(now.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }), W - 24, H - 30);
+    g.fillStyle = "rgba(255,255,255,.55)"; g.font = "500 13px Inter, sans-serif";
+    g.fillText(now.toLocaleDateString(), W - 24, H - 12); g.textAlign = "left";
+
+    // click ripples
+    const nowMs = performance.now();
+    this.ripples = this.ripples.filter((r) => nowMs - r.t < 600);
+    this.ripples.forEach((r) => {
+      const p = (nowMs - r.t) / 600;
+      g.strokeStyle = r.b === 2 ? `rgba(255,92,122,${1 - p})` : `rgba(199,115,255,${1 - p})`;
+      g.lineWidth = 3; g.beginPath(); g.arc(r.x * W, r.y * H, 8 + p * 34, 0, Math.PI * 2); g.stroke();
+    });
+
+    // cursor
+    const cx = this.cursor.x * W, cy = this.cursor.y * H;
+    g.save(); g.translate(cx, cy); if (this.down) g.scale(0.9, 0.9);
+    g.beginPath(); g.moveTo(0, 0); g.lineTo(0, 26); g.lineTo(7, 20); g.lineTo(12, 31); g.lineTo(16, 29); g.lineTo(11, 18); g.lineTo(20, 18); g.closePath();
+    g.fillStyle = "#fff"; g.fill(); g.strokeStyle = "#000"; g.lineWidth = 1.5; g.stroke(); g.restore();
+  }
+  round(g, x, y, w, h, r) { g.beginPath(); g.moveTo(x + r, y); g.arcTo(x + w, y, x + w, y + h, r); g.arcTo(x + w, y + h, x, y + h, r); g.arcTo(x, y + h, x, y, r); g.arcTo(x, y, x + w, y, r); g.closePath(); }
+  win(g, x, y, w, h, title, body) {
+    g.save();
+    g.shadowColor = "rgba(0,0,0,.55)"; g.shadowBlur = 40; g.shadowOffsetY = 18;
+    g.fillStyle = "#1e1729"; this.round(g, x, y, w, h, 14); g.fill();
+    g.restore();
+    g.save(); this.round(g, x, y, w, h, 14); g.clip();
+    g.fillStyle = "#261d34"; g.fillRect(x, y, w, 40);
+    g.fillStyle = "#cfc6dc"; g.font = "600 15px Inter, sans-serif"; g.fillText(title, x + 16, y + 26);
+    ["#ff5c7a", "#fbbf24", "#4ade80"].forEach((c, i) => { g.fillStyle = c; g.beginPath(); g.arc(x + w - 24 - i * 22, y + 20, 6, 0, Math.PI * 2); g.fill(); });
+    body(x, y + 40, w, h - 40);
+    g.restore();
+    g.strokeStyle = "rgba(255,255,255,.1)"; g.lineWidth = 1; this.round(g, x, y, w, h, 14); g.stroke();
+  }
+}
+
+// ---------------- boot ----------------
+initLogin();
+initSettings();
+const params = new URLSearchParams(location.search);
+if (params.has("demo")) { state.demo = true; enterDashboard(); }
+else if (state.token && state.server) enterDashboard();
+else showView("view-login");

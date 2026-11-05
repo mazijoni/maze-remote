@@ -1,0 +1,17 @@
+{
+  "name": "maze-remote-server",
+  "version": "0.1.0",
+  "description": "Maze Remote signaling server — run on the Raspberry Pi (or any box)",
+  "type": "module",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
