@@ -3,8 +3,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
+	"log"
+	"os/exec"
+	"regexp"
+	"strconv"
+	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -82,12 +89,65 @@ func listScreensDXGI() (out []Screen, err error) {
 			W: int(d.Desktop.Right - d.Desktop.Left), H: int(d.Desktop.Bottom - d.Desktop.Top),
 		}
 		s.Primary = s.X == 0 && s.Y == 0
+		// DXGI_MODE_ROTATION: 1 identity, 2 = 90°, 3 = 180°, 4 = 270°
+		s.Rotation = map[uint32]int{2: 90, 3: 180, 4: 270}[d.Rotation]
 		out = append(out, s)
 	}
 	return out, nil
 }
 
-func listScreens() []Screen {
+// Desktop Duplication hands over a rotated monitor's image in the panel's
+// native (unrotated) orientation. Work out which filter turns it upright.
+// Newer ffmpeg builds may already rotate, so for 90/270 we probe the frame
+// size ffmpeg actually produces and only rotate if it's still sideways.
+var (
+	probeMu    sync.Mutex
+	probeCache = map[string]string{}
+	sizeRe     = regexp.MustCompile(`Stream #0:0.*?, (\d{2,5})x(\d{2,5})`)
+)
+
+func fixFor(ffmpeg string, s Screen) string {
+	switch s.Rotation {
+	case 180:
+		return "hflip,vflip"
+	case 90, 270:
+	default:
+		return ""
+	}
+	// For DXGI_MODE_ROTATION_ROTATE90 the duplicated texture holds the desktop
+	// turned 90° clockwise, so it is turned back counter-clockwise (and vice versa).
+	fix := "transpose=cclock"
+	if s.Rotation == 270 {
+		fix = "transpose=clock"
+	}
+	key := fmt.Sprintf("%d:%d:%dx%d", s.Index, s.Rotation, s.W, s.H)
+	probeMu.Lock()
+	defer probeMu.Unlock()
+	if v, ok := probeCache[key]; ok {
+		return v
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-f", "lavfi", "-i",
+		fmt.Sprintf("ddagrab=output_idx=%d:framerate=5", s.Index), "-frames:v", "1", "-f", "null", "-")
+	hideWindow(cmd)
+	out, _ := cmd.CombinedOutput()
+	if m := sizeRe.FindSubmatch(out); m != nil {
+		pw, _ := strconv.Atoi(string(m[1]))
+		ph, _ := strconv.Atoi(string(m[2]))
+		if (pw > ph) == (s.W > s.H) {
+			fix = "" // ffmpeg already delivers it upright
+		}
+		log.Printf("Screen at (%d,%d) is rotated %d°: ffmpeg gives %dx%d, desktop is %dx%d -> %s",
+			s.X, s.Y, s.Rotation, pw, ph, s.W, s.H, map[bool]string{true: "rotating it upright", false: "already upright"}[fix != ""])
+	} else {
+		log.Printf("Screen at (%d,%d) is rotated %d°: couldn't probe ffmpeg, rotating it upright", s.X, s.Y, s.Rotation)
+	}
+	probeCache[key] = fix
+	return fix
+}
+
+func listScreens(ffmpeg string) []Screen {
 	ss, err := listScreensDXGI()
 	if err != nil || len(ss) == 0 {
 		for i, r := range monitors() {
@@ -96,6 +156,7 @@ func listScreens() []Screen {
 	}
 	for i := range ss {
 		ss[i].Name = fmt.Sprintf("Screen %d", i+1)
+		ss[i].Fix = fixFor(ffmpeg, ss[i])
 	}
 	return ss
 }

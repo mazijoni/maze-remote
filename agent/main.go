@@ -464,7 +464,7 @@ func main() {
 	a := &Agent{cfg: cfg, input: newInjector(cfg), sel: cfg.Monitor}
 	a.screens = getScreens(cfg)
 	for _, sc := range a.screens {
-		log.Printf("found %s: %dx%d at (%d,%d)", sc.Name, sc.W, sc.H, sc.X, sc.Y)
+		log.Printf("found %s: %dx%d at (%d,%d), rotation %d°", sc.Name, sc.W, sc.H, sc.X, sc.Y, sc.Rotation)
 	}
 	log.Printf("Maze Remote agent %s — %s (%s), encoder %s, %d fps", version, cfg.Name, runtime.GOOS, cfg.Encoder, cfg.FPS)
 	if cfg.Test {

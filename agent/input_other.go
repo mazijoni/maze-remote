@@ -35,7 +35,7 @@ func NewInputInjector() InputInjector { return &xdoInjector{t: Screen{W: 1920, H
 func (x *xdoInjector) SetTarget(t Screen) { x.mu.Lock(); x.t = t; x.mu.Unlock() }
 
 // listScreens: one screen covering the X display (multi-monitor X11 shows up as one big desktop).
-func listScreens() []Screen {
+func listScreens(ffmpeg string) []Screen {
 	s := Screen{Index: 0, Name: "Screen 1", W: 1920, H: 1080, Primary: true}
 	if out, err := exec.Command("xdotool", "getdisplaygeometry").Output(); err == nil {
 		fmt.Sscanf(string(out), "%d %d", &s.W, &s.H)

@@ -11,6 +11,11 @@ type Screen struct {
 	W       int    `json:"w"`
 	H       int    `json:"h"`
 	Primary bool   `json:"primary"`
+	// Rotation in degrees (0, 90, 180, 270) as set in Windows display settings.
+	Rotation int `json:"rot"`
+	// Fix is the ffmpeg filter that turns this screen's captured frames
+	// upright ("" when they already are).
+	Fix string `json:"-"`
 }
 
 // AllScreens selects every monitor stitched into one picture.
@@ -71,10 +76,11 @@ func getScreens(cfg Config) []Screen {
 	if cfg.Test {
 		return []Screen{
 			{Index: 0, Name: "Test screen 1", X: 0, Y: 0, W: 1280, H: 720, Primary: true},
-			{Index: 1, Name: "Test screen 2", X: 1280, Y: 0, W: 1280, H: 720},
+			// portrait monitor, like a rotated real one: frames arrive sideways and need Fix
+			{Index: 1, Name: "Test screen 2", X: 1280, Y: -200, W: 720, H: 1280, Rotation: 90, Fix: "transpose=cclock"},
 		}
 	}
-	ss := listScreens()
+	ss := listScreens(cfg.FFmpeg)
 	if len(ss) == 0 {
 		ss = []Screen{{Index: 0, Name: "Screen", W: 1920, H: 1080, Primary: true}}
 	}

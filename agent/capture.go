@@ -43,11 +43,12 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
 			switch {
 			case cfg.Test:
 				src := []string{"testsrc2", "smptebars", "rgbtestsrc", "yuvtestsrc"}[i%4]
-				args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, sc.W, sc.H, fps))
-				graph += fmt.Sprintf("[%d:v]format=yuv420p[s%d];", i, i)
+				w, h := nativeSize(sc)
+				args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, w, h, fps))
+				graph += fmt.Sprintf("[%d:v]%sformat=yuv420p[s%d];", i, withComma(sc.Fix), i)
 			case runtime.GOOS == "windows":
 				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", sc.Index, fps))
-				graph += fmt.Sprintf("[%d:v]hwdownload,format=bgra,format=yuv420p[s%d];", i, i)
+				graph += fmt.Sprintf("[%d:v]hwdownload,format=bgra,%sformat=yuv420p[s%d];", i, withComma(sc.Fix), i)
 			}
 			stack += fmt.Sprintf("[s%d]", i)
 			if i > 0 {
@@ -66,11 +67,12 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
 	switch {
 	case cfg.Test:
 		src := []string{"testsrc2", "smptebars"}[sc.Index%2]
-		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, sc.W, sc.H, fps))
+		w, h := nativeSize(sc)
+		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, w, h, fps))
 	case runtime.GOOS == "windows":
 		// Desktop Duplication API — fast, low-overhead, needs ffmpeg 6.0+
 		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", sc.Index, fps))
-		hw = (cfg.Encoder == "nvenc" || cfg.Encoder == "amf") && sc.W <= maxW && sc.H <= maxH
+		hw = (cfg.Encoder == "nvenc" || cfg.Encoder == "amf") && sc.W <= maxW && sc.H <= maxH && sc.Fix == ""
 	case runtime.GOOS == "darwin":
 		args = append(args, "-f", "avfoundation", "-framerate", fps, "-capture_cursor", "1", "-i", fmt.Sprintf("%d:none", sc.Index+1))
 	default: // linux / X11
@@ -79,11 +81,26 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
 
 	// ---- filters ----
 	if runtime.GOOS == "windows" && !cfg.Test && !hw {
-		args = append(args, "-vf", "hwdownload,format=bgra,"+fitScale+",format=yuv420p")
+		args = append(args, "-vf", "hwdownload,format=bgra,"+withComma(sc.Fix)+fitScale+",format=yuv420p")
 	} else if !hw {
-		args = append(args, "-vf", fitScale+",format=yuv420p")
+		args = append(args, "-vf", withComma(sc.Fix)+fitScale+",format=yuv420p")
 	}
 	return append(args, encoderArgs(cfg, gop)...)
+}
+
+// nativeSize is the frame size before rotation (what a sideways capture gives).
+func nativeSize(sc Screen) (int, int) {
+	if sc.Rotation == 90 || sc.Rotation == 270 {
+		return sc.H, sc.W
+	}
+	return sc.W, sc.H
+}
+
+func withComma(f string) string {
+	if f == "" {
+		return ""
+	}
+	return f + ","
 }
 
 func encoderArgs(cfg Config, gop string) []string {

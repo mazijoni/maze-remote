@@ -301,7 +301,8 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 /* ── SESSION ──────────────────────────────────────────── */
 .session { position: fixed; inset: 0; z-index: 50; background: #000; overflow: hidden; }
 .stage { position: absolute; inset: 0; display: grid; place-items: center; outline: none; cursor: none; touch-action: none; }
-.stage video, .stage .demo-canvas { width: 100%; height: 100%; object-fit: contain; display: block; background: #000; touch-action: none; }
+/* absolutely positioned so a tall picture (portrait monitor, stitched screens) shrinks to fit instead of growing the stage */
+.stage video, .stage .demo-canvas { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; display: block; background: #000; touch-action: none; }
 .stage-overlay {
   position: absolute; inset: 0; display: grid; place-content: center; justify-items: center; gap: 16px;
   background: var(--paper); cursor: default; transition: opacity .4s ease;
