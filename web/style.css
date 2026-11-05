@@ -453,3 +453,5 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
   *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
 }
 .reduce-motion *, .reduce-motion *::before, .reduce-motion *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; }
+.link { color: var(--accent); border-bottom: 1px solid var(--accent-dim); transition: border-color .15s; }
+.link:hover { border-color: var(--accent); }
