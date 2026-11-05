@@ -125,6 +125,7 @@
       <div class="tb-sep"></div>
       <div class="tb-actions">
         <button class="tb-btn" id="tb-screens" title="Screens" hidden><span class="material-symbols-outlined">desktop_windows</span><span class="tb-badge" id="tb-screens-badge"></span></button>
+        <button class="tb-btn" id="tb-quality" title="Quality"><span class="material-symbols-outlined">tune</span></button>
         <button class="tb-btn" id="tb-keys" title="Send keys"><span class="material-symbols-outlined">keyboard</span></button>
         <button class="tb-btn" id="tb-paste" title="Type text"><span class="material-symbols-outlined">content_paste</span></button>
         <button class="tb-btn" id="tb-info" title="Session info"><span class="material-symbols-outlined">info</span></button>
@@ -139,6 +140,14 @@
       <div id="screens-list"></div>
       <div class="menu-sep"></div>
       <div class="screens-map" id="screens-map" aria-hidden="true"></div>
+    </div>
+
+    <div class="menu-pop quality-pop" id="quality-pop" hidden>
+      <p class="menu-label meta">Stream quality</p>
+      <button data-q="auto"><span class="material-symbols-outlined">auto_awesome</span><span class="q-text"><b>Auto</b><small id="q-auto-desc">Adjusts to your connection</small></span></button>
+      <button data-q="high"><span class="material-symbols-outlined">hd</span><span class="q-text"><b>High</b><small>Full resolution, smoothest</small></span></button>
+      <button data-q="balanced"><span class="material-symbols-outlined">balance</span><span class="q-text"><b>Balanced</b><small>1080p · 30 fps · 4 Mbps</small></span></button>
+      <button data-q="low"><span class="material-symbols-outlined">network_check</span><span class="q-text"><b>Low</b><small>720p · 24 fps · 1.5 Mbps</small></span></button>
     </div>
 
     <div class="menu-pop" id="keys-pop" hidden>

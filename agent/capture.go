@@ -25,13 +25,12 @@ type Capture struct {
 	done chan struct{}
 }
 
-// Largest picture we send. H.264 hardware encoders top out around 4096 wide,
-// and browsers decode 4K comfortably, so "All screens" is scaled to fit this.
-const maxW, maxH = 3840, 2160
-
-func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
-	fps := fmt.Sprint(cfg.FPS)
-	gop := fmt.Sprint(cfg.FPS * 2)
+// The picture is scaled to fit es.MaxW x es.MaxH (at most 4K: H.264 hardware
+// encoders top out around 4096 wide).
+func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
+	fps := fmt.Sprint(es.FPS)
+	gop := fmt.Sprint(es.GOP)
+	maxW, maxH := es.MaxW, es.MaxH
 	args := []string{"-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay"}
 	fitScale := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", maxW, maxH)
 
@@ -58,7 +57,7 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
 		}
 		graph += fmt.Sprintf("%sxstack=inputs=%d:layout=%s:fill=black,%s,format=yuv420p[out]", stack, len(ss), layout, fitScale)
 		args = append(args, "-filter_complex", graph, "-map", "[out]")
-		return append(args, encoderArgs(cfg, gop)...)
+		return append(args, encoderArgs(cfg, es, gop)...)
 	}
 
 	// ---- one screen ----
@@ -85,7 +84,7 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int) []string {
 	} else if !hw {
 		args = append(args, "-vf", withComma(sc.Fix)+fitScale+",format=yuv420p")
 	}
-	return append(args, encoderArgs(cfg, gop)...)
+	return append(args, encoderArgs(cfg, es, gop)...)
 }
 
 // nativeSize is the frame size before rotation (what a sideways capture gives).
@@ -103,10 +102,10 @@ func withComma(f string) string {
 	return f + ","
 }
 
-func encoderArgs(cfg Config, gop string) []string {
+func encoderArgs(cfg Config, es encodeSettings, gop string) []string {
 	var args []string
 	// ---- encoder (no B-frames, short GOP, constant-ish bitrate — tuned for latency) ----
-	br := cfg.Bitrate
+	br := es.bitrate()
 	switch cfg.Encoder {
 	case "nvenc":
 		args = append(args, "-c:v", "h264_nvenc", "-preset", "p1", "-tune", "ull", "-zerolatency", "1",
@@ -124,8 +123,8 @@ func encoderArgs(cfg Config, gop string) []string {
 	return append(args, "-g", gop, "-bf", "0", "-an", "-f", "h264", "-")
 }
 
-func StartCapture(cfg Config, ss []Screen, sel int, track *webrtc.TrackLocalStaticSample) (*Capture, error) {
-	args := ffmpegArgs(cfg, ss, sel)
+func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *webrtc.TrackLocalStaticSample) (*Capture, error) {
+	args := ffmpegArgs(cfg, ss, sel, es)
 	cmd := exec.Command(cfg.FFmpeg, args...)
 	hideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()

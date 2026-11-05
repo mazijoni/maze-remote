@@ -457,6 +457,14 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 .link { color: var(--accent); border-bottom: 1px solid var(--accent-dim); transition: border-color .15s; }
 .link:hover { border-color: var(--accent); }
 
+/* ── QUALITY MENU ─────────────────────────────────────── */
+.quality-pop { min-width: 260px; }
+.quality-pop .q-text { display: flex; flex-direction: column; line-height: 1.3; }
+.quality-pop .q-text b { font-weight: 500; }
+.quality-pop .q-text small { font-size: 11px; color: var(--ink-dim); }
+.quality-pop button.current { color: var(--accent); }
+.quality-pop button.current small { color: var(--accent); opacity: .7; }
+
 /* ── SCREEN PICKER ────────────────────────────────────── */
 .tb-btn { position: relative; }
 .tb-badge {

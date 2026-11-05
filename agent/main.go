@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
@@ -138,6 +139,11 @@ type Session struct {
 	track   *webrtc.TrackLocalStaticSample
 	cap     *Capture
 	dc      *webrtc.DataChannel
+	quality string    // what the viewer chose: auto, high, balanced, low
+	level   string    // what is actually streaming: high, balanced, low
+	relayed bool      // video goes through the TURN relay
+	started time.Time // when the current capture started
+	lastKF  time.Time // last keyframe-driven restart
 	once    sync.Once
 	pending []webrtc.ICECandidateInit
 }
@@ -305,14 +311,21 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	a.sess = s
 	a.mu.Unlock()
 
-	// Read RTCP so interceptors (NACK etc.) work; request keyframe on PLI.
+	// Read RTCP so interceptors (NACK etc.) work. When the viewer can't decode
+	// (lost packets, often a lost keyframe on mobile) it sends a PLI/FIR: answer
+	// with a fresh keyframe by restarting the encoder.
 	go func() {
 		for {
 			pkts, _, err := sender.ReadRTCP()
 			if err != nil {
 				return
 			}
-			_ = pkts
+			for _, p := range pkts {
+				switch p.(type) {
+				case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+					go a.keyframe(s)
+				}
+			}
 		}
 	}()
 
@@ -334,6 +347,8 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 					_ = dc.SendText(string(msg.Data))
 				case "screen":
 					go a.switchScreen(s, ev.N)
+				case "quality":
+					go a.setQuality(s, ev.S, ev.C)
 				default:
 					a.input.Handle(ev)
 				}
@@ -344,7 +359,8 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 			s.dc = dc
 			a.mu.Unlock()
 			info, _ := json.Marshal(map[string]any{"t": "hello", "name": a.cfg.Name, "os": runtime.GOOS, "version": version,
-				"encoder": a.cfg.Encoder, "screens": a.screens, "screen": a.sel})
+				"encoder": a.cfg.Encoder, "screens": a.screens, "screen": a.sel,
+				"quality": s.quality, "level": s.level, "relayed": s.relayed})
 			_ = dc.SendText(string(info))
 		})
 	})
@@ -354,19 +370,23 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 		switch st {
 		case webrtc.PeerConnectionStateConnected:
 			s.once.Do(func() {
-				a.capMu.Lock()
-				defer a.capMu.Unlock()
-				capt, err := StartCapture(a.cfg, a.screens, a.sel, track)
-				if err != nil {
+				// Through the relay (mobile data, other networks) start at Balanced.
+				if pair, err := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); err == nil && pair != nil {
+					s.relayed = pair.Local.Typ == webrtc.ICECandidateTypeRelay || pair.Remote.Typ == webrtc.ICECandidateTypeRelay
+				}
+				s.quality = "auto"
+				s.level = autoLevel(s)
+				if err := a.restartCapture(s); err != nil {
 					log.Printf("capture failed: %v", err)
 					a.send(wsMsg{Type: "bye", To: s.client, Sid: s.sid})
 					go a.closeSession("capture failed")
 					return
 				}
-				a.mu.Lock()
-				s.cap = capt
-				a.mu.Unlock()
-				log.Printf("▶ streaming %s to viewer (session %s)", screenLabel(a.screens, a.sel), s.sid)
+				route := "direct"
+				if s.relayed {
+					route = "relayed (TURN)"
+				}
+				log.Printf("▶ streaming %s to viewer, %s, quality %s (session %s)", screenLabel(a.screens, a.sel), route, s.level, s.sid)
 			})
 		case webrtc.PeerConnectionStateFailed, webrtc.PeerConnectionStateClosed:
 			a.mu.Lock()
@@ -397,10 +417,99 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	return nil
 }
 
-// switchScreen restarts capture on another monitor (or all of them) mid-session.
-func (a *Agent) switchScreen(s *Session, sel int) {
+func autoLevel(s *Session) string {
+	if s.relayed {
+		return "balanced"
+	}
+	return "high"
+}
+
+// restartCapture (re)starts the encoder for the session with its current
+// screen and quality. A new encoder always begins with a keyframe.
+func (a *Agent) restartCapture(s *Session) error {
 	a.capMu.Lock()
 	defer a.capMu.Unlock()
+	a.mu.Lock()
+	if a.sess != s {
+		a.mu.Unlock()
+		return nil
+	}
+	old := s.cap
+	s.cap = nil
+	ss, sel, level := a.screens, a.sel, s.level
+	a.mu.Unlock()
+
+	if old != nil {
+		old.Stop()
+	}
+	capt, err := StartCapture(a.cfg, ss, sel, settingsFor(a.cfg, level), s.track)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if a.sess != s {
+		capt.Stop()
+		return nil
+	}
+	s.cap = capt
+	s.started = time.Now()
+	return nil
+}
+
+// keyframe answers a picture-loss report, at most every 2 seconds.
+func (a *Agent) keyframe(s *Session) {
+	a.mu.Lock()
+	if a.sess != s || s.cap == nil || time.Since(s.started) < 1500*time.Millisecond || time.Since(s.lastKF) < 2*time.Second {
+		a.mu.Unlock()
+		return
+	}
+	s.lastKF = time.Now()
+	a.mu.Unlock()
+	log.Printf("viewer lost the picture — sending a fresh keyframe")
+	if err := a.restartCapture(s); err != nil {
+		log.Printf("keyframe restart failed: %v", err)
+	}
+}
+
+// setQuality applies the viewer's choice. For "auto" the browser may pass a
+// level it wants to step down to when frames aren't getting through.
+func (a *Agent) setQuality(s *Session, q, autoStep string) {
+	if q != "auto" && !validLevel(q) {
+		return
+	}
+	a.mu.Lock()
+	if a.sess != s {
+		a.mu.Unlock()
+		return
+	}
+	level := q
+	if q == "auto" {
+		level = autoLevel(s)
+		if validLevel(autoStep) {
+			level = autoStep
+		}
+	}
+	changed := level != s.level
+	s.quality, s.level = q, level
+	dc := s.dc
+	a.mu.Unlock()
+
+	if changed {
+		if err := a.restartCapture(s); err != nil {
+			log.Printf("could not change quality: %v", err)
+			return
+		}
+		log.Printf("quality: %s (%s)", level, qualityLevels[level].describe)
+	}
+	if dc != nil {
+		msg, _ := json.Marshal(map[string]any{"t": "quality", "quality": q, "level": level, "relayed": s.relayed})
+		_ = dc.SendText(string(msg))
+	}
+}
+
+// switchScreen restarts capture on another monitor (or all of them) mid-session.
+func (a *Agent) switchScreen(s *Session, sel int) {
 	a.mu.Lock()
 	if a.sess != s {
 		a.mu.Unlock()
@@ -408,24 +517,13 @@ func (a *Agent) switchScreen(s *Session, sel int) {
 	}
 	a.screens = getScreens(a.cfg)
 	sel = validSel(a.screens, sel)
-	old := s.cap
-	s.cap = nil
 	a.sel = sel
-	a.mu.Unlock()
-
-	if old != nil {
-		old.Stop()
-	}
-	a.input.ReleaseAll()
-	a.input.SetTarget(target(a.screens, sel))
-	capt, err := StartCapture(a.cfg, a.screens, sel, s.track)
-	a.mu.Lock()
-	if err == nil && a.sess == s {
-		s.cap = capt
-	}
 	dc := s.dc
 	a.mu.Unlock()
-	if err != nil {
+
+	a.input.ReleaseAll()
+	a.input.SetTarget(target(a.screens, sel))
+	if err := a.restartCapture(s); err != nil {
 		log.Printf("could not switch screen: %v", err)
 		return
 	}
