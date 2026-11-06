@@ -19,3 +19,6 @@ func keepAwake(on bool) {
 		_ = exec.Command("xset", "s", "on", "+dpms").Run()
 	}
 }
+
+// inputDesktop is Windows-only; elsewhere we can't tell, so report nothing.
+func inputDesktop() string { return "" }

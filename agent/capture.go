@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -21,8 +22,10 @@ import (
 // Capture runs ffmpeg, which grabs the screen and encodes H.264 (Annex B) to stdout.
 // We split the stream into access units (frames) and feed them to the WebRTC track.
 type Capture struct {
-	stopping atomic.Bool // set when we stop it on purpose
-	errMsg   string      // ffmpeg's error output if it exited by itself
+	stopping atomic.Bool  // set when we stop it on purpose
+	errMsg   string       // ffmpeg's error output if it exited by itself
+	frames   atomic.Int64 // frames sent so far
+	started  time.Time
 	cmd      *exec.Cmd
 	stop     sync.Once
 	done     chan struct{}
@@ -82,6 +85,10 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 	}
 
 	// ---- filters ----
+	if cfg.Test && testBlackout() {
+		args = append(args, "-vf", "select=0")
+		return append(args, encoderArgs(cfg, es, gop)...)
+	}
 	if runtime.GOOS == "windows" && !cfg.Test && !hw {
 		args = append(args, "-vf", "hwdownload,format=bgra,"+withComma(sc.Fix)+fitScale+",format=yuv420p")
 	} else if !hw {
@@ -96,6 +103,16 @@ func nativeSize(sc Screen) (int, int) {
 		return sc.H, sc.W
 	}
 	return sc.W, sc.H
+}
+
+// testBlackout simulates a screen that gives no picture (like a locked PC) in -test mode.
+func testBlackout() bool {
+	f := os.Getenv("MR_TEST_BLACKOUT")
+	if f == "" {
+		return false
+	}
+	_, err := os.Stat(f)
+	return err == nil
 }
 
 func withComma(f string) string {
@@ -139,11 +156,11 @@ func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *we
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("could not start ffmpeg (%s): %w — is ffmpeg installed and in PATH?", cfg.FFmpeg, err)
 	}
-	c := &Capture{cmd: cmd, done: make(chan struct{})}
+	c := &Capture{cmd: cmd, done: make(chan struct{}), started: time.Now()}
 
 	go func() {
 		defer close(c.done)
-		err := pump(bufio.NewReaderSize(stdout, 1<<20), track)
+		err := pump(bufio.NewReaderSize(stdout, 1<<20), track, &c.frames)
 		_ = cmd.Wait()
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			c.errMsg = msg
@@ -160,7 +177,7 @@ func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *we
 
 // pump groups NAL units into frames: a new frame starts at a VCL slice whose
 // first_mb_in_slice == 0 (first bit of the slice header is 1), or at an AUD.
-func pump(r io.Reader, track *webrtc.TrackLocalStaticSample) error {
+func pump(r io.Reader, track *webrtc.TrackLocalStaticSample, count *atomic.Int64) error {
 	reader, err := h264reader.NewReader(r)
 	if err != nil {
 		return err
@@ -181,6 +198,7 @@ func pump(r io.Reader, track *webrtc.TrackLocalStaticSample) error {
 			dur = time.Millisecond * 16
 		}
 		err := track.WriteSample(media.Sample{Data: frame, Duration: dur})
+		count.Add(1)
 		frame = nil
 		hasVCL = false
 		return err
@@ -212,6 +230,10 @@ func pump(r io.Reader, track *webrtc.TrackLocalStaticSample) error {
 		}
 	}
 }
+
+// Frames is how many frames have been sent; ErrText is ffmpeg's error output.
+func (c *Capture) Frames() int64   { return c.frames.Load() }
+func (c *Capture) ErrText() string { return c.errMsg }
 
 // Done is closed when ffmpeg exits, whether stopped or crashed.
 func (c *Capture) Done() <-chan struct{} { return c.done }

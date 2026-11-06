@@ -310,6 +310,9 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 }
 .stage-overlay .spinner { width: 26px; height: 26px; }
 .stage-overlay.gone { opacity: 0; pointer-events: none; }
+.stage-overlay #stage-status { max-width: min(520px, calc(100vw - 48px)); text-align: center; line-height: 1.6; text-transform: none; letter-spacing: .04em; }
+.stage-overlay.problem .spinner { border-top-color: var(--warn); }
+.stage-overlay.problem #stage-status { color: var(--ink-2); font-family: var(--sans); font-size: 14px; letter-spacing: 0; }
 
 .toolbar {
   position: absolute; top: var(--gap); left: 50%; z-index: 3;

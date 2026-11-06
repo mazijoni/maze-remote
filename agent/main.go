@@ -133,19 +133,22 @@ type Agent struct {
 }
 
 type Session struct {
-	sid     string
-	client  string
-	pc      *webrtc.PeerConnection
-	track   *webrtc.TrackLocalStaticSample
-	cap     *Capture
-	dc      *webrtc.DataChannel
-	quality string    // what the viewer chose: auto, high, balanced, low
-	level   string    // what is actually streaming: high, balanced, low
-	relayed bool      // video goes through the TURN relay
-	started time.Time // when the current capture started
-	lastKF  time.Time // last keyframe-driven restart
-	once    sync.Once
-	pending []webrtc.ICECandidateInit
+	sid        string
+	client     string
+	pc         *webrtc.PeerConnection
+	track      *webrtc.TrackLocalStaticSample
+	cap        *Capture
+	dc         *webrtc.DataChannel
+	quality    string    // what the viewer chose: auto, high, balanced, low
+	level      string    // what is actually streaming: high, balanced, low
+	relayed    bool      // video goes through the TURN relay
+	started    time.Time // when the current capture started
+	lastKF     time.Time // last keyframe-driven restart
+	stalled    bool      // screen is giving no picture; don't restart for keyframes
+	stallStage int       // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
+	lastFrame  time.Time // when the screen last produced a picture
+	once       sync.Once
+	pending    []webrtc.ICECandidateInit
 }
 
 func (a *Agent) send(m wsMsg) {
@@ -459,8 +462,101 @@ func (a *Agent) restartCapture(s *Session) error {
 	}
 	s.cap = capt
 	s.started = time.Now()
+	if s.lastFrame.IsZero() {
+		s.lastFrame = s.started
+	}
 	go a.watch(s, capt)
+	go a.watchFrames(s, capt)
 	return nil
+}
+
+// watchFrames notices when capture runs but no picture comes out — e.g. the
+// monitors are off or Windows is showing the lock screen — tries to fix it,
+// and tells the viewer why. Its state lives on the session, so capture
+// restarts don't reset it.
+func (a *Agent) watchFrames(s *Session, capt *Capture) {
+	t := time.NewTicker(time.Second)
+	defer t.Stop()
+	var last int64
+	for {
+		select {
+		case <-capt.Done():
+			return
+		case <-t.C:
+		}
+		a.mu.Lock()
+		if a.sess != s || s.cap != capt {
+			a.mu.Unlock()
+			return
+		}
+		dc := s.dc
+		if n := capt.Frames(); n != last {
+			last = n
+			s.lastFrame = time.Now()
+			back := s.stallStage > 0
+			s.stallStage, s.stalled = 0, false
+			a.mu.Unlock()
+			if back {
+				log.Printf("picture is back")
+				a.status(dc, "")
+			}
+			continue
+		}
+		quiet := time.Since(s.lastFrame)
+		stage := s.stallStage
+		a.mu.Unlock()
+
+		switch {
+		case stage == 0 && quiet > 4*time.Second:
+			a.setStall(s, 1)
+			log.Printf("no picture from the screen for %s — waking the displays", quiet.Round(time.Second))
+			a.status(dc, "Waking the screen…")
+			wakeDisplays()
+			time.Sleep(time.Second)
+			go a.restartCapture(s) // a fresh capture after waking; a new watcher takes over
+			return
+		case stage == 1 && quiet > 12*time.Second:
+			a.setStall(s, 2)
+			msg := screenProblem("")
+			log.Printf("still no picture: %s", msg)
+			a.statusErr(dc, msg)
+		case stage >= 2 && int(quiet.Seconds())%15 == 0:
+			// keep trying quietly: the moment the PC is unlocked the picture comes back
+			wakeDisplays()
+			go a.restartCapture(s)
+			return
+		}
+	}
+}
+
+func (a *Agent) setStall(s *Session, stage int) {
+	a.mu.Lock()
+	s.stallStage, s.stalled = stage, true
+	a.mu.Unlock()
+}
+
+// screenProblem explains why there's no picture, as well as the agent can tell.
+func screenProblem(ffmpegErr string) string {
+	if desk := inputDesktop(); desk != "" && desk != "Default" {
+		return "Your PC is locked (or showing a Windows security prompt). Windows doesn't let apps capture the lock screen — " +
+			"unlock it at the PC, or turn off \"require sign-in\" in Windows settings so it doesn't lock while you're away."
+	}
+	if ffmpegErr != "" {
+		e := ffmpegErr
+		if len(e) > 160 {
+			e = e[:160] + "…"
+		}
+		return "Screen capture failed on the PC: " + e
+	}
+	return "The PC's screen isn't giving a picture (monitors off or disconnected?). Try again in a moment."
+}
+
+func (a *Agent) statusErr(dc *webrtc.DataChannel, msg string) {
+	if dc == nil {
+		return
+	}
+	b, _ := json.Marshal(map[string]any{"t": "status", "s": msg, "err": true})
+	_ = dc.SendText(string(b))
 }
 
 // watch restarts capture if ffmpeg dies on its own — typically because the
@@ -481,7 +577,15 @@ func (a *Agent) watch(s *Session, capt *Capture) {
 		if attempt == 1 {
 			log.Printf("screen capture stopped — waking the displays and retrying")
 		}
-		a.status(dc, "Waking the screen…")
+		if attempt >= 3 {
+			msg := screenProblem(capt.ErrText())
+			if attempt == 3 {
+				log.Printf("capture keeps failing: %s", msg)
+			}
+			a.statusErr(dc, msg)
+		} else {
+			a.status(dc, "Waking the screen…")
+		}
 		wakeDisplays()
 		time.Sleep(time.Duration(min(attempt, 5)) * time.Second)
 		a.mu.Lock()
@@ -525,7 +629,9 @@ func (a *Agent) status(dc *webrtc.DataChannel, msg string) {
 // keyframe answers a picture-loss report, at most every 2 seconds.
 func (a *Agent) keyframe(s *Session) {
 	a.mu.Lock()
-	if a.sess != s || s.cap == nil || time.Since(s.started) < 1500*time.Millisecond || time.Since(s.lastKF) < 2*time.Second {
+	// A fresh keyframe only helps if the screen is producing pictures at all.
+	if a.sess != s || s.cap == nil || s.stalled || time.Since(s.lastFrame) > 2*time.Second ||
+		time.Since(s.started) < 1500*time.Millisecond || time.Since(s.lastKF) < 2*time.Second {
 		a.mu.Unlock()
 		return
 	}

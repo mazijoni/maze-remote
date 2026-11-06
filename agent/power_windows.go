@@ -14,7 +14,28 @@ var (
 	procSetThreadExecutionState = kernel32.NewProc("SetThreadExecutionState")
 	procGetTickCount            = kernel32.NewProc("GetTickCount")
 	procGetLastInputInfo        = user32.NewProc("GetLastInputInfo")
+	procOpenInputDesktop        = user32.NewProc("OpenInputDesktop")
+	procGetUserObjectInfoW      = user32.NewProc("GetUserObjectInformationW")
+	procCloseDesktop            = user32.NewProc("CloseDesktop")
 )
+
+// inputDesktop names the desktop that currently gets keyboard/mouse input:
+// "Default" for the normal desktop, "Winlogon" for the lock/sign-in screen.
+// A normal (non-admin) app isn't allowed to open the secure desktop at all,
+// so failing to open it also means the PC is locked or showing a UAC prompt.
+func inputDesktop() string {
+	h, _, _ := procOpenInputDesktop.Call(0, 0, 0x0001) // DESKTOP_READOBJECTS
+	if h == 0 {
+		return "Winlogon"
+	}
+	defer procCloseDesktop.Call(h)
+	var buf [128]uint16
+	var need uint32
+	if r, _, _ := procGetUserObjectInfoW.Call(h, 2, uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)*2), uintptr(unsafe.Pointer(&need))); r == 0 {
+		return ""
+	}
+	return syscall.UTF16ToString(buf[:])
+}
 
 const (
 	esContinuous      = 0x80000000

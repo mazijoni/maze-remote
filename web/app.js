@@ -332,7 +332,7 @@ async function startSession(host, card) {
   $("#sess-name").textContent = host.name;
   $("#sess-stats").textContent = "";
   $("#stage-status").textContent = "Connecting to " + host.name + "…";
-  $("#stage-overlay").classList.remove("gone");
+  $("#stage-overlay").classList.remove("gone", "problem");
   $("#info-drawer").hidden = true;
   $("#keys-pop").hidden = true;
   $("#screens-pop").hidden = true;
@@ -427,8 +427,17 @@ class RtcSession {
       } else if (m.t === "status") {
         // e.g. "Waking the screen…" while the agent recovers screen capture
         const ov = $("#stage-overlay");
-        if (m.s) { $("#stage-status").textContent = m.s; ov.classList.remove("gone"); }
-        else if (video.readyState >= 2) ov.classList.add("gone");
+        ov.classList.toggle("problem", !!m.err);
+        if (m.s) {
+          $("#stage-status").textContent = m.s;
+          ov.classList.remove("gone");
+          // the agent knows what's wrong: keep the session open (it recovers by itself
+          // if the problem goes away) instead of replacing this with a generic timeout
+          if (m.err) { clearTimeout(this.connectTimer); this.knownProblem = true; }
+        } else {
+          this.knownProblem = false;
+          if (video.readyState >= 2) ov.classList.add("gone");
+        }
       } else if (m.t === "screen") {
         setScreens(m.screens || screens.list, m.screen);
         $("#stage-overlay").classList.add("gone");
@@ -512,7 +521,7 @@ class RtcSession {
       this.badLoss = dGot + dLost > 20 && dLost / (dGot + dLost) > 0.08 ? (this.badLoss || 0) + 1 : 0;
     }
     this.h = { dec, lost, got };
-    if (quality.choice !== "auto" || !this.connectedAt || !quality.level) return;
+    if (quality.choice !== "auto" || !this.connectedAt || !quality.level || this.knownProblem) return;
     const since = now - (this.lastFrameAt || this.connectedAt);
     const stalled = since > (this.lastFrameAt ? 6000 : 8000);
     if ((stalled || this.badLoss >= 4) && now - (this.lastStep || 0) > 9000) {
