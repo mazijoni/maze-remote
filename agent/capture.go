@@ -52,7 +52,7 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 				args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, w, h, fps))
 				graph += fmt.Sprintf("[%d:v]%sformat=yuv420p[s%d];", i, withComma(sc.Fix), i)
 			case runtime.GOOS == "windows":
-				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", sc.Index, fps))
+				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=%d", sc.Index, fps, es.mouse()))
 				graph += fmt.Sprintf("[%d:v]hwdownload,format=bgra,%sformat=yuv420p[s%d];", i, withComma(sc.Fix), i)
 			}
 			stack += fmt.Sprintf("[s%d]", i)
@@ -76,12 +76,12 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, w, h, fps))
 	case runtime.GOOS == "windows":
 		// Desktop Duplication API — fast, low-overhead, needs ffmpeg 6.0+
-		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=1", sc.Index, fps))
+		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=%d", sc.Index, fps, es.mouse()))
 		hw = (cfg.Encoder == "nvenc" || cfg.Encoder == "amf") && sc.W <= maxW && sc.H <= maxH && sc.Fix == ""
 	case runtime.GOOS == "darwin":
-		args = append(args, "-f", "avfoundation", "-framerate", fps, "-capture_cursor", "1", "-i", fmt.Sprintf("%d:none", sc.Index+1))
+		args = append(args, "-f", "avfoundation", "-framerate", fps, "-capture_cursor", fmt.Sprint(es.mouse()), "-i", fmt.Sprintf("%d:none", sc.Index+1))
 	default: // linux / X11
-		args = append(args, "-f", "x11grab", "-framerate", fps, "-draw_mouse", "1", "-i", displayName())
+		args = append(args, "-f", "x11grab", "-framerate", fps, "-draw_mouse", fmt.Sprint(es.mouse()), "-i", displayName())
 	}
 
 	// ---- filters ----

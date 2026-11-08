@@ -17,7 +17,52 @@ var (
 	procOpenInputDesktop        = user32.NewProc("OpenInputDesktop")
 	procGetUserObjectInfoW      = user32.NewProc("GetUserObjectInformationW")
 	procCloseDesktop            = user32.NewProc("CloseDesktop")
+	procGetCursorInfo           = user32.NewProc("GetCursorInfo")
+	procLoadCursorW             = user32.NewProc("LoadCursorW")
 )
+
+// Standard Windows cursors -> CSS cursor names.
+var (
+	cursorOnce  sync.Once
+	cursorNames map[uintptr]string
+)
+
+func loadCursorNames() {
+	ids := map[uintptr]string{
+		32512: "default", 32513: "text", 32514: "wait", 32515: "crosshair",
+		32642: "nwse-resize", 32643: "nesw-resize", 32644: "ew-resize", 32645: "ns-resize",
+		32646: "move", 32648: "not-allowed", 32649: "pointer", 32650: "progress", 32651: "help",
+	}
+	cursorNames = map[uintptr]string{}
+	for id, name := range ids {
+		if h, _, _ := procLoadCursorW.Call(0, id); h != 0 {
+			cursorNames[h] = name
+		}
+	}
+}
+
+// cursorShape returns the CSS name for the pointer Windows is showing right now
+// ("none" when hidden, "default" for app-specific cursors we can't match).
+func cursorShape() string {
+	cursorOnce.Do(loadCursorNames)
+	var ci struct {
+		Size   uint32
+		Flags  uint32
+		Cursor uintptr
+		X, Y   int32
+	}
+	ci.Size = uint32(unsafe.Sizeof(ci))
+	if r, _, _ := procGetCursorInfo.Call(uintptr(unsafe.Pointer(&ci))); r == 0 {
+		return "default"
+	}
+	if ci.Flags&1 == 0 { // CURSOR_SHOWING
+		return "none"
+	}
+	if n, ok := cursorNames[ci.Cursor]; ok {
+		return n
+	}
+	return "default"
+}
 
 // inputDesktop names the desktop that currently gets keyboard/mouse input:
 // "Default" for the normal desktop, "Winlogon" for the lock/sign-in screen.

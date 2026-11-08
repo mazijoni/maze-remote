@@ -14,6 +14,7 @@ import (
 	"os"
 	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -58,6 +59,9 @@ type iceServer struct {
 type signalData struct {
 	SDP       *webrtc.SessionDescription `json:"sdp,omitempty"`
 	Candidate *webrtc.ICECandidateInit   `json:"candidate,omitempty"`
+	// The viewer draws its own mouse pointer (it has a real mouse), so the
+	// agent leaves the pointer out of the video and sends its shape instead.
+	LocalCursor bool `json:"localCursor,omitempty"`
 }
 
 func loadConfig() Config {
@@ -133,22 +137,24 @@ type Agent struct {
 }
 
 type Session struct {
-	sid        string
-	client     string
-	pc         *webrtc.PeerConnection
-	track      *webrtc.TrackLocalStaticSample
-	cap        *Capture
-	dc         *webrtc.DataChannel
-	quality    string    // what the viewer chose: auto, high, balanced, low
-	level      string    // what is actually streaming: high, balanced, low
-	relayed    bool      // video goes through the TURN relay
-	started    time.Time // when the current capture started
-	lastKF     time.Time // last keyframe-driven restart
-	stalled    bool      // screen is giving no picture; don't restart for keyframes
-	stallStage int       // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
-	lastFrame  time.Time // when the screen last produced a picture
-	once       sync.Once
-	pending    []webrtc.ICECandidateInit
+	sid         string
+	client      string
+	pc          *webrtc.PeerConnection
+	track       *webrtc.TrackLocalStaticSample
+	cap         *Capture
+	dc          *webrtc.DataChannel
+	quality     string       // what the viewer chose: auto, high, balanced, low
+	level       string       // what is actually streaming: high, balanced, low
+	relayed     bool         // video goes through the TURN relay
+	started     time.Time    // when the current capture started
+	lastKF      time.Time    // last keyframe-driven restart
+	stalled     bool         // screen is giving no picture; don't restart for keyframes
+	localCursor bool         // viewer draws the pointer itself
+	moveSeq     atomic.Int64 // newest mouse position applied (positions can arrive out of order)
+	stallStage  int          // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
+	lastFrame   time.Time    // when the screen last produced a picture
+	once        sync.Once
+	pending     []webrtc.ICECandidateInit
 }
 
 func (a *Agent) send(m wsMsg) {
@@ -266,7 +272,7 @@ func (a *Agent) onSignal(m wsMsg) {
 			a.ice = toICE(m.ICE) // fresh relay credentials from the server
 		}
 		a.closeSession("replaced by new viewer")
-		if err := a.startSession(m.From, m.Sid, *d.SDP); err != nil {
+		if err := a.startSession(m.From, m.Sid, *d.SDP, d.LocalCursor); err != nil {
 			log.Printf("session failed: %v", err)
 			a.send(wsMsg{Type: "bye", To: m.From, Sid: m.Sid})
 			a.closeSession("setup failed")
@@ -288,7 +294,7 @@ func (a *Agent) onSignal(m wsMsg) {
 	}
 }
 
-func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription) error {
+func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription, localCursor bool) error {
 	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: a.ice})
 	if err != nil {
 		return err
@@ -309,7 +315,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	a.screens = getScreens(a.cfg)
 	a.sel = validSel(a.screens, a.sel)
 	a.input.SetTarget(target(a.screens, a.sel))
-	s := &Session{sid: sid, client: client, pc: pc, track: track}
+	s := &Session{sid: sid, client: client, pc: pc, track: track, localCursor: localCursor}
 	a.mu.Lock()
 	a.sess = s
 	a.mu.Unlock()
@@ -352,12 +358,24 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 					go a.switchScreen(s, ev.N)
 				case "quality":
 					go a.setQuality(s, ev.S, ev.C)
+				case "mm":
+					// numbered positions on the unordered channel: skip any older than the last one
+					if n := int64(ev.N); n > 0 {
+						if n <= s.moveSeq.Load() {
+							return
+						}
+						s.moveSeq.Store(n)
+					}
+					a.input.Handle(ev)
 				default:
 					a.input.Handle(ev)
 				}
 			}
 		})
 		dc.OnOpen(func() {
+			if dc.Label() != "input" {
+				return // the unreliable "move" channel only carries mouse positions
+			}
 			a.mu.Lock()
 			s.dc = dc
 			a.mu.Unlock()
@@ -389,6 +407,9 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 					a.send(wsMsg{Type: "bye", To: s.client, Sid: s.sid})
 					go a.closeSession("capture failed")
 					return
+				}
+				if s.localCursor {
+					go a.syncCursor(s)
 				}
 				route := "direct"
 				if s.relayed {
@@ -450,7 +471,9 @@ func (a *Agent) restartCapture(s *Session) error {
 	if old != nil {
 		old.Stop()
 	}
-	capt, err := StartCapture(a.cfg, ss, sel, settingsFor(a.cfg, level), s.track)
+	es := settingsFor(a.cfg, level)
+	es.DrawMouse = !s.localCursor
+	capt, err := StartCapture(a.cfg, ss, sel, es, s.track)
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if err != nil {
@@ -549,6 +572,29 @@ func screenProblem(ffmpegErr string) string {
 		return "Screen capture failed on the PC: " + e
 	}
 	return "The PC's screen isn't giving a picture (monitors off or disconnected?). Try again in a moment."
+}
+
+// syncCursor tells the viewer which pointer shape the PC shows (arrow, text
+// cursor, hand, resize...), so its locally drawn pointer matches.
+func (a *Agent) syncCursor(s *Session) {
+	t := time.NewTicker(40 * time.Millisecond)
+	defer t.Stop()
+	last := "?"
+	for range t.C {
+		a.mu.Lock()
+		alive, dc := a.sess == s, s.dc
+		a.mu.Unlock()
+		if !alive {
+			return
+		}
+		c := cursorShape()
+		if c == last || dc == nil {
+			continue
+		}
+		last = c
+		b, _ := json.Marshal(map[string]any{"t": "cursor", "c": c})
+		_ = dc.SendText(string(b))
+	}
 }
 
 func (a *Agent) statusErr(dc *webrtc.DataChannel, msg string) {

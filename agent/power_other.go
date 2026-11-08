@@ -22,3 +22,6 @@ func keepAwake(on bool) {
 
 // inputDesktop is Windows-only; elsewhere we can't tell, so report nothing.
 func inputDesktop() string { return "" }
+
+// cursorShape: shape sync is Windows-only; elsewhere show a normal arrow.
+func cursorShape() string { return "default" }

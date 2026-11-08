@@ -45,6 +45,14 @@ func parseKbps(s string) int {
 // Encode settings for a level, never above what the config allows.
 type encodeSettings struct {
 	FPS, Kbps, MaxW, MaxH, GOP int
+	DrawMouse                  bool // draw the cursor into the video (off when the browser draws its own)
+}
+
+func (e encodeSettings) mouse() int {
+	if e.DrawMouse {
+		return 1
+	}
+	return 0
 }
 
 func settingsFor(cfg Config, level string) encodeSettings {

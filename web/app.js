@@ -379,6 +379,7 @@ async function endSession(reason) {
   video.srcObject = null;
   document.body.style.overflow = "";
   document.body.classList.remove("in-session");
+  stage.style.cursor = "";
   if (reason) toast(reason, reason.startsWith("Disconnected") ? "" : "bad");
   if (card) { card.classList.remove("enter"); void card.offsetWidth; card.classList.add("enter"); card.style.animationDelay = "0ms"; }
 }
@@ -408,6 +409,12 @@ class RtcSession {
       if (h264.length) tr.setCodecPreferences(h264);
     } catch {}
     this.dc = pc.createDataChannel("input", { ordered: true });
+    // Fast lane for mouse positions: never wait for a lost packet to be resent —
+    // a newer position is already on its way.
+    this.moveDc = pc.createDataChannel("move", { ordered: false, maxRetransmits: 0 });
+    // With a real mouse, draw the pointer here (instant) instead of in the video.
+    this.localCursor = matchMedia("(pointer: fine)").matches;
+    if (this.localCursor) stage.style.cursor = "default";
     this.dc.onopen = () => { if (this.pendingScreen !== undefined) { this.send({ t: "screen", n: this.pendingScreen }); this.pendingScreen = undefined; } };
     this.dc.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
@@ -424,6 +431,8 @@ class RtcSession {
         const prev = quality.level;
         setQuality(m.quality, m.level, !!m.relayed);
         if (prev !== m.level) toast("Quality: " + LEVEL_NAMES[m.level] + (m.quality === "auto" ? " (auto)" : ""), "ok");
+      } else if (m.t === "cursor") {
+        if (this.localCursor) stage.style.cursor = m.c || "default";
       } else if (m.t === "status") {
         // e.g. "Waking the screen…" while the agent recovers screen capture
         const ov = $("#stage-overlay");
@@ -459,7 +468,7 @@ class RtcSession {
     };
     (async () => {
       await pc.setLocalDescription(await pc.createOffer());
-      sendSignal({ type: "signal", to: this.host.id, sid: this.sid, data: { sdp: pc.localDescription } });
+      sendSignal({ type: "signal", to: this.host.id, sid: this.sid, data: { sdp: pc.localDescription, localCursor: this.localCursor } });
     })().catch((e) => endSession("Couldn't start: " + e.message));
 
     // Not connected at all after 25s: give up. Connected but no picture yet: auto quality
@@ -480,7 +489,10 @@ class RtcSession {
       else if (d.candidate) await this.pc.addIceCandidate(d.candidate);
     } catch (e) { console.warn(e); }
   }
-  send(ev) { if (this.dc && this.dc.readyState === "open") this.dc.send(JSON.stringify(ev)); }
+  send(ev) {
+    const ch = ev.t === "mm" && this.moveDc && this.moveDc.readyState === "open" ? this.moveDc : this.dc;
+    if (ch && ch.readyState === "open") ch.send(JSON.stringify(ev));
+  }
   async stats() {
     if (!this.pc) return;
     const rep = await this.pc.getStats();
@@ -561,15 +573,22 @@ function norm(e) {
   return { x: Math.min(1, Math.max(0, (e.clientX - c.x) / c.w)), y: Math.min(1, Math.max(0, (e.clientY - c.y) / c.h)) };
 }
 
-let pendingMove = null;
+let pendingMove = null, lastMoveAt = 0, moveTimer = 0;
 function flushMove() {
-  if (pendingMove && session) session.send({ t: "mm", ...pendingMove });
+  moveTimer = 0;
+  if (pendingMove && session) {
+    session.moveSeq = (session.moveSeq || 0) + 1; // lets the agent drop positions that arrive late
+    session.send({ t: "mm", n: session.moveSeq, ...pendingMove });
+    lastMoveAt = performance.now();
+  }
   pendingMove = null;
 }
 stage.addEventListener("pointermove", (e) => {
   if (!session) return;
-  if (!pendingMove) requestAnimationFrame(flushMove);
   pendingMove = norm(e);
+  const wait = 4 - (performance.now() - lastMoveAt);
+  if (wait <= 0) flushMove();
+  else if (!moveTimer) moveTimer = setTimeout(flushMove, wait);
 });
 stage.addEventListener("pointerdown", (e) => {
   if (!session) return;
