@@ -20,7 +20,20 @@ var (
 	procGetCursorInfo           = user32.NewProc("GetCursorInfo")
 	procLoadCursorW             = user32.NewProc("LoadCursorW")
 	procPostMessageW            = user32.NewProc("PostMessageW")
+	procRedrawWindow            = user32.NewProc("RedrawWindow")
 )
+
+// kickScreen makes Windows repaint every window once. Desktop Duplication only
+// delivers a frame when something on screen changes, so on an idle desktop the
+// first picture can otherwise take forever.
+func kickScreen() {
+	const rdwInvalidate, rdwErase, rdwAllChildren, rdwFrame = 0x1, 0x4, 0x80, 0x400
+	procRedrawWindow.Call(0, 0, 0, rdwInvalidate|rdwErase|rdwAllChildren|rdwFrame)
+	in := inputM{Type: inputMouse, Mi: mouseInput{Dx: 1, Flags: mouseMove}}
+	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+	in.Mi.Dx = -1
+	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+}
 
 // Standard Windows cursors -> CSS cursor names.
 var (

@@ -590,14 +590,25 @@ func (a *Agent) restartCapture(s *Session) error {
 // and tells the viewer why. Its state lives on the session, so capture
 // restarts don't reset it.
 func (a *Agent) watchFrames(s *Session, capt *Capture) {
-	t := time.NewTicker(time.Second)
+	t := time.NewTicker(250 * time.Millisecond)
 	defer t.Stop()
 	var last int64
+	kicks := 0
 	for {
 		select {
 		case <-capt.Done():
 			return
 		case <-t.C:
+		}
+		// No first picture yet? Nudge Windows to repaint (at 0.8s, 1.6s, 2.4s).
+		if n := capt.Frames(); n == 0 {
+			if el := time.Since(capt.started); kicks < 3 && el > time.Duration(kicks+1)*800*time.Millisecond {
+				kicks++
+				log.Printf("no picture yet after %s — asking Windows to repaint (%d/3)", el.Round(100*time.Millisecond), kicks)
+				kickScreen()
+			}
+		} else if last == 0 {
+			log.Printf("first picture after %s", time.Since(capt.started).Round(10*time.Millisecond))
 		}
 		a.mu.Lock()
 		if a.sess != s || s.cap != capt {

@@ -25,3 +25,6 @@ func inputDesktop() string { return "" }
 
 // cursorShape: shape sync is Windows-only; elsewhere show a normal arrow.
 func cursorShape() string { return "default" }
+
+// kickScreen: only needed for Windows Desktop Duplication.
+func kickScreen() {}
