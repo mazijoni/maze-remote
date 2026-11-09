@@ -296,7 +296,12 @@ func (a *Agent) onSignal(m wsMsg) {
 }
 
 func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription, localCursor bool) error {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{ICEServers: a.ice})
+	// Mobile networks often go quiet for a few seconds; don't call the link
+	// "disconnected" too early, and keep the path warm with frequent keepalives.
+	se := webrtc.SettingEngine{}
+	se.SetICETimeouts(10*time.Second, 40*time.Second, time.Second)
+	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	pc, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: a.ice})
 	if err != nil {
 		return err
 	}
@@ -390,7 +395,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	})
 
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
-		log.Printf("peer connection: %s", st)
+		log.Printf("peer connection: %s%s", st, routeInfo(pc))
 		switch st {
 		case webrtc.PeerConnectionStateConnected:
 			s.once.Do(func() {
@@ -498,6 +503,39 @@ func (a *Agent) refreshScreens(s *Session) {
 			_ = dc.SendText(string(msg))
 		}
 	}
+}
+
+// routeInfo describes the network path in use, e.g.
+// " — this PC: srflx udp 84.x.x.x:51234 ↔ viewer: relay udp 104.x.x.x:3478 | sent 3.1 MB, got 12 kB"
+func routeInfo(pc *webrtc.PeerConnection) string {
+	sctp := pc.SCTP()
+	if sctp == nil || sctp.Transport() == nil || sctp.Transport().ICETransport() == nil {
+		return ""
+	}
+	pair, err := sctp.Transport().ICETransport().GetSelectedCandidatePair()
+	if err != nil || pair == nil {
+		return ""
+	}
+	out := fmt.Sprintf(" — this PC: %s %s %s:%d ↔ viewer: %s %s %s:%d",
+		pair.Local.Typ, pair.Local.Protocol, pair.Local.Address, pair.Local.Port,
+		pair.Remote.Typ, pair.Remote.Protocol, pair.Remote.Address, pair.Remote.Port)
+	for _, st := range pc.GetStats() {
+		if t, ok := st.(webrtc.TransportStats); ok {
+			out += fmt.Sprintf(" | sent %s, got %s", byteSize(t.BytesSent), byteSize(t.BytesReceived))
+			break
+		}
+	}
+	return out
+}
+
+func byteSize(n uint64) string {
+	switch {
+	case n > 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(n)/(1<<20))
+	case n > 1<<10:
+		return fmt.Sprintf("%d kB", n>>10)
+	}
+	return fmt.Sprintf("%d B", n)
 }
 
 func autoLevel(s *Session) string {
