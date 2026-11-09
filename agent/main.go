@@ -131,9 +131,10 @@ type Agent struct {
 	sess  *Session
 	input InputInjector
 
-	screens []Screen // monitors, refreshed at the start of each session
-	sel     int      // current screen index, or AllScreens
-	capMu   sync.Mutex
+	screens    []Screen // monitors, refreshed at the start of each session
+	maxScreens int      // most screens seen, so we know when sleeping ones are back
+	sel        int      // current screen index, or AllScreens
+	capMu      sync.Mutex
 }
 
 type Session struct {
@@ -312,7 +313,9 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 		pc.Close()
 		return err
 	}
-	a.screens = getScreens(a.cfg)
+	// Sleeping monitors often count as disconnected, so wake them before
+	// listing screens, then give them a moment to come back.
+	a.screens = a.wakeAndListScreens()
 	a.sel = validSel(a.screens, a.sel)
 	a.input.SetTarget(target(a.screens, a.sel))
 	s := &Session{sid: sid, client: client, pc: pc, track: track, localCursor: localCursor}
@@ -397,11 +400,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 				}
 				s.quality = "auto"
 				s.level = autoLevel(s)
-				// Monitors asleep? Wake them first — screen capture fails on a sleeping display.
-				if wakeDisplays() {
-					time.Sleep(800 * time.Millisecond)
-				}
-				keepAwake(true)
+				keepAwake(true) // screens were woken when the viewer asked to connect
 				if err := a.restartCapture(s); err != nil {
 					log.Printf("capture failed: %v", err)
 					a.send(wsMsg{Type: "bye", To: s.client, Sid: s.sid})
@@ -444,6 +443,61 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	a.signal(s, signalData{SDP: pc.LocalDescription()})
 	log.Printf("viewer connecting (session %s)", sid)
 	return nil
+}
+
+// wakeAndListScreens wakes the displays and waits (up to ~6s) until as many
+// screens are back as the agent has seen before.
+func (a *Agent) wakeAndListScreens() []Screen {
+	asleep := wakeDisplays()
+	ss := getScreens(a.cfg)
+	if len(ss) >= a.maxScreens && !asleep {
+		a.maxScreens = max(a.maxScreens, len(ss))
+		return ss
+	}
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) && len(ss) < max(a.maxScreens, 1) {
+		time.Sleep(500 * time.Millisecond)
+		wakeDisplays()
+		ss = getScreens(a.cfg)
+	}
+	if asleep {
+		time.Sleep(700 * time.Millisecond) // let a freshly woken screen settle
+		ss = getScreens(a.cfg)
+	}
+	if len(ss) < a.maxScreens {
+		log.Printf("only %d of %d screens came back after waking", len(ss), a.maxScreens)
+	}
+	a.maxScreens = max(a.maxScreens, len(ss))
+	return ss
+}
+
+// refreshScreens re-reads the monitors mid-session (they may have been asleep
+// or disconnected) and tells the viewer if the list changed.
+func (a *Agent) refreshScreens(s *Session) {
+	ss := a.wakeAndListScreens()
+	a.mu.Lock()
+	if a.sess != s {
+		a.mu.Unlock()
+		return
+	}
+	changed := len(ss) != len(a.screens)
+	for i := range ss {
+		if !changed && (ss[i].Index != a.screens[i].Index || ss[i].W != a.screens[i].W || ss[i].H != a.screens[i].H) {
+			changed = true
+		}
+	}
+	a.screens = ss
+	a.sel = validSel(ss, a.sel)
+	sel, dc := a.sel, s.dc
+	a.mu.Unlock()
+	a.input.SetTarget(target(ss, sel))
+	if changed {
+		log.Printf("screens changed: now %d", len(ss))
+		if dc != nil {
+			msg, _ := json.Marshal(map[string]any{"t": "screen", "screen": sel, "screens": ss})
+			_ = dc.SendText(string(msg))
+		}
+	}
 }
 
 func autoLevel(s *Session) string {
@@ -534,8 +588,7 @@ func (a *Agent) watchFrames(s *Session, capt *Capture) {
 			a.setStall(s, 1)
 			log.Printf("no picture from the screen for %s — waking the displays", quiet.Round(time.Second))
 			a.status(dc, "Waking the screen…")
-			wakeDisplays()
-			time.Sleep(time.Second)
+			a.refreshScreens(s)
 			go a.restartCapture(s) // a fresh capture after waking; a new watcher takes over
 			return
 		case stage == 1 && quiet > 12*time.Second:
@@ -545,7 +598,7 @@ func (a *Agent) watchFrames(s *Session, capt *Capture) {
 			a.statusErr(dc, msg)
 		case stage >= 2 && int(quiet.Seconds())%15 == 0:
 			// keep trying quietly: the moment the PC is unlocked the picture comes back
-			wakeDisplays()
+			a.refreshScreens(s)
 			go a.restartCapture(s)
 			return
 		}
@@ -632,7 +685,7 @@ func (a *Agent) watch(s *Session, capt *Capture) {
 		} else {
 			a.status(dc, "Waking the screen…")
 		}
-		wakeDisplays()
+		a.refreshScreens(s)
 		time.Sleep(time.Duration(min(attempt, 5)) * time.Second)
 		a.mu.Lock()
 		still := a.sess == s && (s.cap == capt || s.cap == nil)
@@ -782,6 +835,7 @@ func main() {
 	platformInit()
 	a := &Agent{cfg: cfg, input: newInjector(cfg), sel: cfg.Monitor}
 	a.screens = getScreens(cfg)
+	a.maxScreens = len(a.screens)
 	for _, sc := range a.screens {
 		log.Printf("found %s: %dx%d at (%d,%d), rotation %d°", sc.Name, sc.W, sc.H, sc.X, sc.Y, sc.Rotation)
 	}

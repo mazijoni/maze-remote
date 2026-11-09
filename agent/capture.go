@@ -62,6 +62,11 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 			layout += fmt.Sprintf("%d_%d", sc.X-b.X, sc.Y-b.Y)
 		}
 		graph += fmt.Sprintf("%sxstack=inputs=%d:layout=%s:fill=black,%s,format=yuv420p[out]", stack, len(ss), layout, fitScale)
+		if cfg.Test && testBlackout() {
+			graph += ";[out]select=0[blk]"
+			args = append(args, "-filter_complex", graph, "-map", "[blk]")
+			return append(args, encoderArgs(cfg, es, gop)...)
+		}
 		args = append(args, "-filter_complex", graph, "-map", "[out]")
 		return append(args, encoderArgs(cfg, es, gop)...)
 	}

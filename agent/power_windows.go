@@ -19,6 +19,7 @@ var (
 	procCloseDesktop            = user32.NewProc("CloseDesktop")
 	procGetCursorInfo           = user32.NewProc("GetCursorInfo")
 	procLoadCursorW             = user32.NewProc("LoadCursorW")
+	procPostMessageW            = user32.NewProc("PostMessageW")
 )
 
 // Standard Windows cursors -> CSS cursor names.
@@ -105,10 +106,18 @@ func idleMillis() uint32 {
 // Returns true if the PC had been idle long enough that they may have been off.
 func wakeDisplays() bool {
 	idle := idleMillis()
+	// 1. a tiny mouse jiggle (1px and back)
 	in := inputM{Type: inputMouse, Mi: mouseInput{Dx: 1, Flags: mouseMove}}
 	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
 	in.Mi.Dx = -1
 	procSendInput.Call(1, uintptr(unsafe.Pointer(&in)), unsafe.Sizeof(in))
+	// 2. tap F15 — a real key no keyboard has and no app uses, but it counts as activity
+	for _, f := range []uint32{0, keyUp} {
+		k := inputK{Type: inputKeyboard, Ki: kbdInput{Vk: 0x7E, Flags: f}}
+		procSendInput.Call(1, uintptr(unsafe.Pointer(&k)), unsafe.Sizeof(k))
+	}
+	// 3. ask Windows directly to power the monitors on (WM_SYSCOMMAND / SC_MONITORPOWER, -1 = on)
+	procPostMessageW.Call(0xFFFF, 0x0112, 0xF170, ^uintptr(0))
 	procSetThreadExecutionState.Call(esDisplayRequired) // one-shot "someone is here"
 	return idle > 30_000
 }
