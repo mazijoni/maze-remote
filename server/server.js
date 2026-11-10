@@ -9,6 +9,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
+import { createStats } from "./stats.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -181,6 +182,13 @@ const hosts = new Map();
 // clients: connId -> ws
 const clients = new Map();
 
+// Pi / server stats, pushed every 2 s to signed-in browsers that asked for them
+const stats = createStats({ extra: () => ({ hosts: hosts.size, viewers: clients.size }) });
+stats.onSample((s) => {
+  const msg = JSON.stringify({ type: "stats", stats: s });
+  for (const ws of clients.values()) if (ws.wantStats && ws.readyState === 1) ws.send(msg);
+});
+
 const wss = new WebSocketServer({ server, path: "/ws", maxPayload: 256 * 1024 });
 
 function send(ws, msg) {
@@ -235,6 +243,13 @@ wss.on("connection", (ws, req) => {
         send(ws, { type: "welcome", id: ws.id, ice: iceServers(), hosts: hostList() });
         return;
       }
+      return;
+    }
+
+    // --- client: server stats on/off ---
+    if (ws.role === "client" && msg.type === "stats-sub") {
+      ws.wantStats = !!msg.on;
+      if (ws.wantStats && stats.latest()) send(ws, { type: "stats", stats: stats.latest() });
       return;
     }
 

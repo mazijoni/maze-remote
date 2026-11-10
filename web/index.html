@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20,400,0,0&display=block" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=12">
+  <link rel="stylesheet" href="style.css?v=13">
 </head>
 <body>
 
@@ -79,6 +79,7 @@
         <div class="rail-divider"></div>
         <div class="rail-sections">
           <button class="rail-btn active" title="Machines"><span class="material-symbols-outlined">desktop_windows</span></button>
+          <button class="rail-btn" id="btn-server" title="Server stats" hidden><span class="material-symbols-outlined">monitor_heart</span></button>
           <button class="rail-btn" id="btn-add" title="Add a machine"><span class="material-symbols-outlined">add_to_queue</span></button>
           <button class="rail-btn" id="btn-help" title="How-to &amp; fixes"><span class="material-symbols-outlined">help</span></button>
         </div>
@@ -102,6 +103,17 @@
             <button class="btn btn-primary" id="btn-add-2"><span class="material-symbols-outlined">add</span>Add machine</button>
           </div>
         </div>
+        <button id="server-strip" class="server-strip" hidden aria-label="Server stats — open details">
+          <span class="ss-head">
+            <span class="material-symbols-outlined">memory</span>
+            <span class="ss-name"><b id="ss-host">Server</b><small id="ss-sub">—</small></span>
+          </span>
+          <span class="ss-tile" data-k="cpu"><small>CPU</small><b>—</b><svg class="spark" viewBox="0 0 90 24" preserveAspectRatio="none"><path class="line"/></svg></span>
+          <span class="ss-tile" data-k="temp"><small>Temp</small><b>—</b><svg class="spark" viewBox="0 0 90 24" preserveAspectRatio="none"><path class="line"/></svg></span>
+          <span class="ss-tile" data-k="mem"><small>Memory</small><b>—</b><i class="bar"><i></i></i></span>
+          <span class="ss-tile" data-k="disk"><small>Disk</small><b>—</b><i class="bar"><i></i></i></span>
+          <span class="ss-more material-symbols-outlined">chevron_right</span>
+        </button>
         <div id="host-grid" class="host-grid" aria-live="polite"></div>
       </div>
     </main>
@@ -312,6 +324,50 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
       </section>
     </div>
 
+    <div class="modal modal-server" id="modal-server" role="dialog" aria-labelledby="server-title" hidden>
+      <div class="modal-head">
+        <div>
+          <p class="view-eyebrow">Server · <span id="sv-live">live</span></p>
+          <h3 class="modal-title" id="server-title"><span id="sv-host">Server</span> <em>stats</em></h3>
+        </div>
+        <button class="btn btn-ghost btn-icon" data-close-modal aria-label="Close"><span class="material-symbols-outlined">close</span></button>
+      </div>
+      <p class="sv-warn" id="sv-warn" hidden></p>
+      <div class="sv-grid">
+        <section class="sv-card">
+          <p class="meta">CPU</p>
+          <div class="sv-big"><b id="sv-cpu">—</b><small id="sv-cpu-sub"></small></div>
+          <svg class="chart" id="sv-cpu-chart" viewBox="0 0 300 60" preserveAspectRatio="none"><path class="area"/><path class="line"/></svg>
+          <div class="sv-cores" id="sv-cores"></div>
+        </section>
+        <section class="sv-card">
+          <p class="meta">Temperature</p>
+          <div class="sv-big"><b id="sv-temp">—</b><small id="sv-temp-sub"></small></div>
+          <svg class="chart" id="sv-temp-chart" viewBox="0 0 300 60" preserveAspectRatio="none"><path class="area"/><path class="line"/></svg>
+        </section>
+        <section class="sv-card">
+          <p class="meta">Memory</p>
+          <div class="sv-big"><b id="sv-mem">—</b><small id="sv-mem-sub"></small></div>
+          <i class="bar" id="sv-mem-bar"><i></i></i>
+          <p class="sv-line" id="sv-swap"></p>
+        </section>
+        <section class="sv-card">
+          <p class="meta">Disk</p>
+          <div class="sv-big"><b id="sv-disk">—</b><small id="sv-disk-sub"></small></div>
+          <i class="bar" id="sv-disk-bar"><i></i></i>
+        </section>
+        <section class="sv-card sv-span">
+          <p class="meta">Network</p>
+          <div class="sv-net">
+            <div class="sv-big"><b id="sv-rx">—</b><small>↓ download</small></div>
+            <div class="sv-big"><b id="sv-tx">—</b><small>↑ upload</small></div>
+          </div>
+          <svg class="chart" id="sv-net-chart" viewBox="0 0 300 60" preserveAspectRatio="none"><path class="area"/><path class="line"/><path class="line alt"/></svg>
+        </section>
+      </div>
+      <dl class="info-list sv-info" id="sv-info"></dl>
+    </div>
+
     <div class="modal" id="modal-settings" role="dialog" aria-labelledby="settings-title" hidden>
       <div class="modal-head">
         <div>
@@ -372,6 +428,6 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
     </article>
   </template>
 
-  <script src="app.js?v=12" type="module"></script>
+  <script src="app.js?v=13" type="module"></script>
 </body>
 </html>
