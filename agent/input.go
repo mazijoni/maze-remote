@@ -57,6 +57,9 @@ func (l *logInjector) SetTarget(t Screen) { l.t = t }
 func (l *logInjector) ReleaseAll()        {}
 
 func newInjector(cfg Config) InputInjector {
+	if cfg.Camera != nil {
+		return noInput{}
+	}
 	if cfg.Test {
 		return &logInjector{}
 	}

@@ -460,6 +460,11 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 .link { color: var(--accent); border-bottom: 1px solid var(--accent-dim); transition: border-color .15s; }
 .link:hover { border-color: var(--accent); }
 
+/* ── CAMERA SESSIONS & SNAPSHOT ───────────────────────── */
+.session.is-camera #tb-keys, .session.is-camera #tb-paste { display: none; }
+.session.is-camera .stage { cursor: default !important; }
+.snap-flash { position: absolute; inset: 0; background: #fff; pointer-events: none; z-index: 5; }
+
 /* ── MACHINE MENU ─────────────────────────────────────── */
 .host-more {
   position: absolute; top: 6px; right: 6px; width: 30px; height: 30px; display: grid; place-items: center;

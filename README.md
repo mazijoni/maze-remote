@@ -102,6 +102,17 @@ bash scripts/pi-agent.sh
 
 It installs ffmpeg and xdotool, downloads the ARM agent, reads the host secret from the server's `.env`, and starts the agent with the desktop. Screen capture needs an **X11** desktop; if the Pi uses Wayland (the default), the script tells you how to switch (`sudo raspi-config nonint do_wayland W1`, then reboot). The Pi 5 has no hardware H.264 encoder, so it streams with x264 at 30 fps.
 
+### Add the Raspberry Pi camera
+
+A camera connected to the Pi's camera port shows up as its own machine, **Pi Camera**, streamed with the same low-latency pipeline (`rpicam-vid` → ffmpeg x264 → WebRTC). It runs as a system service, so it works from boot without the desktop:
+
+```bash
+cd ~/maze-remote && git pull
+bash scripts/pi-camera.sh
+```
+
+Settings live in `~/maze-remote-agent/maze-remote-camera.json` (`width`, `height`, `fps`, `rotation: 180`, `hflip`, `vflip`); apply changes with `sudo systemctl restart maze-remote-camera`. The 📷 toolbar button saves a snapshot of any session as a PNG.
+
 ### 3. Access from anywhere (remote.maze-development.com)
 
 **Website + signaling — Cloudflare Tunnel.** Gives the Pi a public HTTPS address without opening any ports on your router. Your domain's DNS must be on Cloudflare.

@@ -35,6 +35,16 @@ type Config struct {
 	Monitor int    `json:"monitor"`
 	FFmpeg  string `json:"ffmpeg"`
 	Test    bool   `json:"test"`
+	// Camera, when set, streams a Raspberry Pi camera instead of the desktop.
+	Camera *CameraConfig `json:"camera,omitempty"`
+}
+
+// kind is what the website shows for this machine (icon + label).
+func (c Config) kind() string {
+	if c.Camera != nil {
+		return "camera"
+	}
+	return runtime.GOOS
 }
 
 type wsMsg struct {
@@ -115,6 +125,9 @@ func loadConfig() Config {
 		cfg.Test = true
 	}
 
+	if cfg.Camera != nil {
+		cfg.Camera.defaults()
+	}
 	if cfg.Server == "" || cfg.Secret == "" {
 		fmt.Println("Maze Remote agent", version)
 		fmt.Println("Missing -server or -secret. Example:")
@@ -213,7 +226,7 @@ func (a *Agent) connectOnce() error {
 		c.Close()
 	}()
 
-	a.send(wsMsg{Type: "host-hello", ID: a.cfg.ID, Name: a.cfg.Name, OS: runtime.GOOS, Secret: a.cfg.Secret,
+	a.send(wsMsg{Type: "host-hello", ID: a.cfg.ID, Name: a.cfg.Name, OS: a.cfg.kind(), Secret: a.cfg.Secret,
 		Version: version, Caps: []string{"update", "restart"}})
 
 	// keepalive

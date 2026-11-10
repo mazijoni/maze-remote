@@ -73,6 +73,9 @@ func validSel(ss []Screen, sel int) int {
 
 // getScreens lists monitors; -test mode fakes two side-by-side screens.
 func getScreens(cfg Config) []Screen {
+	if cfg.Camera != nil {
+		return cameraScreens(cfg)
+	}
 	if cfg.Test {
 		return []Screen{
 			{Index: 0, Name: "Test screen 1", X: 0, Y: 0, W: 1280, H: 720, Primary: true},

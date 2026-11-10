@@ -22,6 +22,7 @@ import (
 // Capture runs ffmpeg, which grabs the screen and encodes H.264 (Annex B) to stdout.
 // We split the stream into access units (frames) and feed them to the WebRTC track.
 type Capture struct {
+	src      *exec.Cmd    // camera mode: the capture program feeding ffmpeg
 	stopping atomic.Bool  // set when we stop it on purpose
 	errMsg   string       // ffmpeg's error output if it exited by itself
 	frames   atomic.Int64 // frames sent so far
@@ -120,6 +121,14 @@ func testBlackout() bool {
 	return err == nil
 }
 
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimSpace(s), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func withComma(f string) string {
 	if f == "" {
 		return ""
@@ -149,8 +158,22 @@ func encoderArgs(cfg Config, es encodeSettings, gop string) []string {
 }
 
 func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *webrtc.TrackLocalStaticSample) (*Capture, error) {
-	args := ffmpegArgs(cfg, ss, sel, es)
-	cmd := exec.Command(cfg.FFmpeg, args...)
+	var src, cmd *exec.Cmd
+	var srcErr bytes.Buffer
+	if cfg.Camera != nil {
+		src, cmd = cameraCommands(cfg, es)
+		pipe, err := src.StdoutPipe()
+		if err != nil {
+			return nil, err
+		}
+		cmd.Stdin = pipe
+		src.Stderr = &srcErr
+		if err := src.Start(); err != nil {
+			return nil, fmt.Errorf("could not start the camera (%s): %w — is rpicam-apps installed?", cfg.Camera.Command, err)
+		}
+	} else {
+		cmd = exec.Command(cfg.FFmpeg, ffmpegArgs(cfg, ss, sel, es)...)
+	}
 	hideWindow(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -159,14 +182,25 @@ func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *we
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
+		if src != nil {
+			src.Process.Kill()
+			src.Wait()
+		}
 		return nil, fmt.Errorf("could not start ffmpeg (%s): %w — is ffmpeg installed and in PATH?", cfg.FFmpeg, err)
 	}
-	c := &Capture{cmd: cmd, done: make(chan struct{}), started: time.Now()}
+	c := &Capture{cmd: cmd, src: src, done: make(chan struct{}), started: time.Now()}
 
 	go func() {
 		defer close(c.done)
 		err := pump(bufio.NewReaderSize(stdout, 1<<20), track, &c.frames)
 		_ = cmd.Wait()
+		if src != nil {
+			// the camera can only be opened by one program at a time: make sure it's
+			// fully closed before anyone starts a new capture
+			src.Process.Kill()
+			src.Wait()
+			stderr.WriteString(lastLines(srcErr.String(), 3))
+		}
 		if msg := strings.TrimSpace(stderr.String()); msg != "" {
 			c.errMsg = msg
 			if !c.stopping.Load() {
@@ -249,6 +283,9 @@ func (c *Capture) Crashed() bool { return !c.stopping.Load() }
 func (c *Capture) Stop() {
 	c.stopping.Store(true)
 	c.stop.Do(func() {
+		if c.src != nil && c.src.Process != nil {
+			_ = c.src.Process.Kill()
+		}
 		if c.cmd.Process != nil {
 			_ = c.cmd.Process.Kill()
 		}

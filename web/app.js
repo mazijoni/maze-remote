@@ -207,8 +207,8 @@ $("#btn-add").addEventListener("click", () => openAddModal());
 $("#btn-add-2").addEventListener("click", () => openAddModal());
 
 
-const OS_ICONS = { windows: "desktop_windows", linux: "terminal", darwin: "laptop_mac", default: "computer" };
-const OS_NAMES = { windows: "Windows", linux: "Linux", darwin: "macOS" };
+const OS_ICONS = { windows: "desktop_windows", linux: "terminal", darwin: "laptop_mac", camera: "videocam", default: "computer" };
+const OS_NAMES = { windows: "Windows", linux: "Linux", darwin: "macOS", camera: "Camera" };
 
 function ago(ts) {
   const s = Math.max(1, Math.round((Date.now() - ts) / 1000));
@@ -399,6 +399,7 @@ async function startSession(host, card) {
   session = state.demo ? new DemoSession(host) : new RtcSession(host);
   session.card = card;
   $("#sess-name").textContent = host.name;
+  sessEl.classList.toggle("is-camera", host.os === "camera");
   $("#sess-stats").textContent = "";
   $("#stage-status").textContent = "Connecting to " + host.name + "…";
   $("#stage-overlay").classList.remove("gone", "problem");
@@ -826,6 +827,31 @@ $("#toolbar").addEventListener("pointerenter", showToolbar);
 $("#toolbar-handle").addEventListener("pointerenter", showToolbar);
 
 $("#tb-close").addEventListener("click", () => endSession("Disconnected"));
+
+// Snapshot: save the current picture (screen or camera) as a PNG
+$("#tb-snap").addEventListener("click", () => {
+  if (!session) return;
+  const src = session.canvas || video;
+  const w = src.videoWidth || src.width, h = src.videoHeight || src.height;
+  if (!w) return toast("No picture yet", "bad");
+  const c = document.createElement("canvas");
+  c.width = w; c.height = h;
+  c.getContext("2d").drawImage(src, 0, 0, w, h);
+  const stamp = new Date().toISOString().slice(0, 19).replace("T", "_").replace(/:/g, "-");
+  const name = `${session.host.name.replace(/[^\w-]+/g, "-")}_${stamp}.png`;
+  c.toBlob((blob) => {
+    if (!blob) return toast("Couldn't save the snapshot", "bad");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = name;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    toast("Snapshot saved", "ok");
+  }, "image/png");
+  // a quick white flash, like a camera shutter
+  const f = document.createElement("div");
+  f.className = "snap-flash"; sessEl.append(f);
+  animate(f, [{ opacity: .7 }, { opacity: 0 }], { duration: 380, easing: "ease-out" }).then(() => f.remove());
+});
 $("#tb-full").addEventListener("click", async () => {
   if (document.fullscreenElement) { await document.exitFullscreen(); return; }
   try {
