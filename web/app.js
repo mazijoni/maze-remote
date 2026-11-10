@@ -247,6 +247,9 @@ function renderHosts(hosts, animateIn = false) {
     const btn = $(".host-connect", card);
     if (!online) { btn.disabled = true; btn.querySelector("span").textContent = "Offline"; }
     else card.addEventListener("click", () => startSession(h, card));
+    const more = $(".host-more", card);
+    if (!online || state.demo) more.remove();
+    else more.addEventListener("click", (e) => { e.stopPropagation(); openCardMenu(h, more); });
     if (animateIn || !known.has(h.id)) {
       card.classList.add("enter");
       card.style.animationDelay = (animateIn ? i * 70 : 0) + "ms";
@@ -291,6 +294,43 @@ $("#modal-add").addEventListener("click", async (e) => {
   } catch { toast("Couldn't copy — select it manually", "bad"); }
 });
 
+// ---------------- machine menu (update / restart agent) ----------------
+let cardMenuHost = null;
+async function openCardMenu(h, btn) {
+  const pop = $("#card-pop");
+  if (!pop.hidden) { await closeCardMenu(); if (cardMenuHost && cardMenuHost.id === h.id) return; }
+  cardMenuHost = h;
+  btn.classList.add("on");
+  const ok = (h.caps || []).includes("update");
+  $("#card-pop-label").textContent = h.name + (h.version ? " · agent v" + h.version : "");
+  $$("#card-pop [data-cmd]").forEach((b) => (b.disabled = !ok));
+  $("#card-pop-note").hidden = ok;
+  $("#card-pop-note").textContent = "This agent is too old to update remotely. Update it once by hand (How-to → Windows PC → step 2), or connect and use Keys → Run… with Type text.";
+  pop.hidden = false;
+  const r = btn.getBoundingClientRect(), w = pop.offsetWidth;
+  Object.assign(pop.style, { top: r.bottom + 6 + "px", left: Math.max(12, Math.min(innerWidth - w - 12, r.right - w)) + "px" });
+  await animate(pop, [{ opacity: 0, transform: "translateY(-6px) scale(.97)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: EASE_OUT });
+  pop.getAnimations().forEach((a) => a.cancel());
+}
+async function closeCardMenu() {
+  const pop = $("#card-pop");
+  if (pop.hidden) return;
+  $$(".host-more.on").forEach((b) => b.classList.remove("on"));
+  await animate(pop, [{ opacity: 1 }, { opacity: 0, transform: "translateY(-4px)" }], { duration: 120, easing: EASE_IN });
+  pop.hidden = true;
+  pop.getAnimations().forEach((a) => a.cancel());
+}
+$("#card-pop").addEventListener("click", async (e) => {
+  const b = e.target.closest("[data-cmd]");
+  if (!b || b.disabled || !cardMenuHost) return;
+  const h = cardMenuHost, cmd = b.dataset.cmd;
+  await closeCardMenu();
+  sendSignal({ type: "command", to: h.id, cmd });
+  toast(cmd === "update" ? `Updating ${h.name}…` : `Restarting ${h.name}…`);
+});
+document.addEventListener("pointerdown", (e) => { if (!e.target.closest("#card-pop, .host-more")) closeCardMenu(); });
+window.addEventListener("scroll", () => closeCardMenu(), { passive: true, capture: true });
+
 // ---------------- signaling ----------------
 function connectSignaling() {
   if (state.ws) { state.ws.onclose = null; state.ws.close(); }
@@ -320,6 +360,9 @@ function connectSignaling() {
         break;
       case "bye":
         if (session && session.sid === m.sid) endSession("The host ended the session");
+        break;
+      case "command-result":
+        toast(m.msg || (m.ok ? "Done" : "Failed"), m.ok ? "ok" : "bad");
         break;
       case "error":
         if (session && session.sid === m.sid) endSession(m.error || "Connection failed");
@@ -829,6 +872,10 @@ $("#btn-send-text").addEventListener("click", async () => {
   const s = $("#paste-text").value;
   if (!s || !session) return;
   session.send({ t: "text", s });
+  if ($("#paste-enter").checked) {
+    await new Promise((r) => setTimeout(r, 150));
+    session.send({ t: "kd", c: "Enter" }); session.send({ t: "ku", c: "Enter" });
+  }
   $("#paste-text").value = "";
   await closeModal();
   toast("Typed " + s.length + " characters", "ok");

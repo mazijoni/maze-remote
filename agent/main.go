@@ -22,7 +22,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-var version = "0.1.0"
+var version = "0.2.0"
 
 type Config struct {
 	Server  string `json:"server"`
@@ -38,16 +38,21 @@ type Config struct {
 }
 
 type wsMsg struct {
-	Type   string          `json:"type"`
-	To     string          `json:"to,omitempty"`
-	From   string          `json:"from,omitempty"`
-	Sid    string          `json:"sid,omitempty"`
-	Data   json.RawMessage `json:"data,omitempty"`
-	ICE    []iceServer     `json:"ice,omitempty"`
-	ID     string          `json:"id,omitempty"`
-	Name   string          `json:"name,omitempty"`
-	OS     string          `json:"os,omitempty"`
-	Secret string          `json:"secret,omitempty"`
+	Type    string          `json:"type"`
+	To      string          `json:"to,omitempty"`
+	From    string          `json:"from,omitempty"`
+	Sid     string          `json:"sid,omitempty"`
+	Data    json.RawMessage `json:"data,omitempty"`
+	ICE     []iceServer     `json:"ice,omitempty"`
+	ID      string          `json:"id,omitempty"`
+	Name    string          `json:"name,omitempty"`
+	OS      string          `json:"os,omitempty"`
+	Secret  string          `json:"secret,omitempty"`
+	Version string          `json:"version,omitempty"`
+	Caps    []string        `json:"caps,omitempty"`
+	Cmd     string          `json:"cmd,omitempty"`
+	OK      bool            `json:"ok,omitempty"`
+	Msg     string          `json:"msg,omitempty"`
 }
 
 type iceServer struct {
@@ -208,7 +213,8 @@ func (a *Agent) connectOnce() error {
 		c.Close()
 	}()
 
-	a.send(wsMsg{Type: "host-hello", ID: a.cfg.ID, Name: a.cfg.Name, OS: runtime.GOOS, Secret: a.cfg.Secret})
+	a.send(wsMsg{Type: "host-hello", ID: a.cfg.ID, Name: a.cfg.Name, OS: runtime.GOOS, Secret: a.cfg.Secret,
+		Version: version, Caps: []string{"update", "restart"}})
 
 	// keepalive
 	c.SetReadDeadline(time.Now().Add(60 * time.Second))
@@ -235,6 +241,8 @@ func (a *Agent) connectOnce() error {
 			log.Printf("online as %q on %s — waiting for connections", a.cfg.Name, a.cfg.Server)
 		case "signal":
 			a.onSignal(m)
+		case "command":
+			go a.runCommand(m.From, m.Cmd)
 		case "bye":
 			a.mu.Lock()
 			s := a.sess
@@ -977,6 +985,7 @@ func main() {
 	cfg := loadConfig()
 	platformInit()
 	a := &Agent{cfg: cfg, input: newInjector(cfg), sel: cfg.Monitor}
+	go cleanupOld()
 	a.screens = getScreens(cfg)
 	a.maxScreens = len(a.screens)
 	if runtime.GOOS == "windows" && !cfg.Test && !vscreenAvailable() {

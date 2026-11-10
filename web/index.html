@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20,400,0,0&display=block" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body>
 
@@ -153,6 +153,8 @@
 
     <div class="menu-pop" id="keys-pop" hidden>
       <button data-combo="MetaLeft"><span class="material-symbols-outlined">grid_view</span>Windows key</button>
+      <button data-combo="MetaLeft+KeyR"><span class="material-symbols-outlined">terminal</span>Run… (Win + R)</button>
+      <button data-combo="Enter"><span class="material-symbols-outlined">keyboard_return</span>Enter</button>
       <button data-combo="AltLeft+Tab"><span class="material-symbols-outlined">tab</span>Alt + Tab</button>
       <button data-combo="ControlLeft+ShiftLeft+Escape"><span class="material-symbols-outlined">monitoring</span>Task Manager</button>
       <button data-combo="MetaLeft+KeyD"><span class="material-symbols-outlined">wallpaper</span>Show desktop</button>
@@ -317,11 +319,19 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
       </div>
       <p class="hint">Typed on the remote PC as if you'd entered it on its keyboard.</p>
       <div class="field"><textarea id="paste-text" rows="5" placeholder="Paste or write something…"></textarea></div>
+      <label class="settings-row paste-enter"><span>Press Enter afterwards</span><input type="checkbox" id="paste-enter" class="switch"></label>
       <div class="modal-actions">
         <button class="btn" data-close-modal>Cancel</button>
         <button class="btn btn-primary" id="btn-send-text"><span class="material-symbols-outlined">keyboard</span>Type it</button>
       </div>
     </div>
+  </div>
+
+  <div class="menu-pop card-pop" id="card-pop" hidden>
+    <p class="menu-label meta" id="card-pop-label">Machine</p>
+    <button data-cmd="update"><span class="material-symbols-outlined">system_update_alt</span><span class="q-text"><b>Update agent</b><small>Download the newest version and restart</small></span></button>
+    <button data-cmd="restart"><span class="material-symbols-outlined">restart_alt</span><span class="q-text"><b>Restart agent</b><small>Works even when there's no picture</small></span></button>
+    <p class="menu-note" id="card-pop-note" hidden></p>
   </div>
 
   <div class="toast-stack" id="toasts" aria-live="polite"></div>
@@ -331,6 +341,7 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
       <div class="host-screen">
         <span class="host-os material-symbols-outlined"></span>
         <span class="host-tag meta"></span>
+        <button class="host-more" title="Machine options" aria-label="Machine options"><span class="material-symbols-outlined">more_vert</span></button>
       </div>
       <div class="host-body">
         <div class="host-meta">
@@ -342,6 +353,6 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
     </article>
   </template>
 
-  <script src="app.js?v=7" type="module"></script>
+  <script src="app.js?v=8" type="module"></script>
 </body>
 </html>

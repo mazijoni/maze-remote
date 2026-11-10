@@ -188,7 +188,7 @@ function send(ws, msg) {
 }
 
 function hostList() {
-  return [...hosts.entries()].map(([id, h]) => ({ id, name: h.name, os: h.os, since: h.since, busy: !!h.session }));
+  return [...hosts.entries()].map(([id, h]) => ({ id, name: h.name, os: h.os, since: h.since, busy: !!h.session, version: h.version, caps: h.caps }));
 }
 
 function broadcastHosts() {
@@ -216,7 +216,11 @@ wss.on("connection", (ws, req) => {
         const prev = hosts.get(id);
         if (prev) prev.ws.close(4000, "replaced");
         ws.role = "host"; ws.hostId = id;
-        hosts.set(id, { ws, name: String(msg.name || id).slice(0, 64), os: String(msg.os || "").slice(0, 32), since: Date.now(), session: null });
+        hosts.set(id, {
+          ws, name: String(msg.name || id).slice(0, 64), os: String(msg.os || "").slice(0, 32), since: Date.now(), session: null,
+          version: String(msg.version || "").slice(0, 32),
+          caps: Array.isArray(msg.caps) ? msg.caps.filter((c) => typeof c === "string").slice(0, 16) : [],
+        });
         clearTimeout(helloTimer);
         send(ws, { type: "welcome", ice: iceServers() });
         console.log(`[host] online: ${id} (${msg.name})`);
@@ -245,6 +249,19 @@ wss.on("connection", (ws, req) => {
       const fwd = { type: "signal", from: ws.id, sid: msg.sid, data: msg.data };
       if (msg.data && msg.data.sdp && msg.data.sdp.type === "offer") fwd.ice = iceServers();
       send(h.ws, fwd);
+      return;
+    }
+    // client -> host: maintenance commands (work without a video session)
+    if (ws.role === "client" && msg.type === "command") {
+      const h = hosts.get(msg.to);
+      if (!h) return send(ws, { type: "command-result", from: msg.to, ok: false, msg: "That machine is offline." });
+      if (!["update", "restart"].includes(msg.cmd)) return;
+      console.log(`[host] ${msg.cmd} requested for ${msg.to}`);
+      send(h.ws, { type: "command", from: ws.id, cmd: msg.cmd });
+      return;
+    }
+    if (ws.role === "host" && msg.type === "command-result") {
+      send(clients.get(msg.to), { type: "command-result", from: ws.hostId, ok: !!msg.ok, msg: String(msg.msg || "").slice(0, 300) });
       return;
     }
     if (ws.role === "client" && msg.type === "bye") {
