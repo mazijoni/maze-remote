@@ -25,7 +25,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-var version = "0.4.0"
+var version = "0.4.1"
 
 // configPath is the config file in use (camera settings are saved beside it).
 var configPath string

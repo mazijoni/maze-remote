@@ -670,8 +670,25 @@ stage.addEventListener("pointermove", (e) => {
   if (wait <= 0) flushMove();
   else if (!moveTimer) moveTimer = setTimeout(flushMove, wait);
 });
+// Camera: tap the picture to focus there
+function focusAt(e) {
+  const c = contentRect();
+  if (e.clientX < c.x || e.clientX > c.x + c.w || e.clientY < c.y || e.clientY > c.y + c.h) return;
+  const p = norm(e), r = stage.getBoundingClientRect();
+  const ring = document.createElement("div");
+  ring.className = "focus-ring";
+  ring.style.left = e.clientX - r.left + "px";
+  ring.style.top = e.clientY - r.top + "px";
+  stage.appendChild(ring);
+  setTimeout(() => ring.remove(), 1600);
+  const s = p.x.toFixed(3) + "," + p.y.toFixed(3);
+  setCameraOpts({ focus: s });
+  session.send({ t: "camera", c: "focus", s });
+  toast("Focusing here…");
+}
 stage.addEventListener("pointerdown", (e) => {
   if (!session) return;
+  if (sessEl.classList.contains("is-camera")) { if (e.button === 0) focusAt(e); e.preventDefault(); return; }
   stage.focus();
   stage.setPointerCapture(e.pointerId);
   session.send({ t: "md", b: e.button, ...norm(e) });
@@ -714,11 +731,12 @@ async function sendCombo(combo) {
 }
 
 // ---------------- camera settings ----------------
-const camOpts = { res: "720p", hdr: false, night: false, flip: false };
+const camOpts = { res: "720p", hdr: false, night: false, flip: false, focus: "" };
 function setCameraOpts(o) {
   Object.assign(camOpts, o || {});
   $$("#cam-pop [data-res]").forEach((b) => b.classList.toggle("current", b.dataset.res === camOpts.res));
   $$("#cam-pop [data-cam]").forEach((b) => { $("input", b).checked = !!camOpts[b.dataset.cam]; });
+  $("#cam-focus-reset").hidden = !camOpts.focus;
 }
 $("#tb-cam").addEventListener("click", async (e) => {
   e.stopPropagation();
@@ -731,6 +749,12 @@ $("#tb-cam").addEventListener("click", async (e) => {
 });
 $("#cam-pop").addEventListener("click", (e) => {
   if (!session) return;
+  if (e.target.closest("#cam-focus-reset")) {
+    setCameraOpts({ focus: "" });
+    session.send({ t: "camera", c: "focus", s: "" });
+    toast("Focusing on the whole picture — restarting the camera…");
+    return;
+  }
   const r = e.target.closest("[data-res]");
   if (r && r.dataset.res !== camOpts.res) {
     setCameraOpts({ res: r.dataset.res });

@@ -12,7 +12,7 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600;700&family=Geist+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20,400,0,0&display=block" rel="stylesheet">
-  <link rel="stylesheet" href="style.css?v=11">
+  <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body>
 
@@ -154,7 +154,8 @@
       <label class="settings-row" data-cam="hdr"><span><b>HDR</b><small>Bright windows and dark corners at once</small></span><input type="checkbox" class="switch"></label>
       <label class="settings-row" data-cam="night"><span><b>Night mode</b><small>Longer exposure for dark rooms</small></span><input type="checkbox" class="switch"></label>
       <label class="settings-row" data-cam="flip"><span><b>Flip 180°</b><small>For a camera mounted upside down</small></span><input type="checkbox" class="switch"></label>
-      <p class="menu-note cam-note">Focus and exposure adjust automatically. Each change restarts the camera for a second.</p>
+      <button class="cam-focus-reset" id="cam-focus-reset" hidden><span class="material-symbols-outlined">center_focus_weak</span>Focus on the whole picture again</button>
+      <p class="menu-note cam-note">Tap the picture to focus on that spot. Exposure adjusts automatically. Each change restarts the camera for a second.</p>
     </div>
 
     <div class="menu-pop quality-pop" id="quality-pop" hidden>
@@ -371,6 +372,6 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
     </article>
   </template>
 
-  <script src="app.js?v=11" type="module"></script>
+  <script src="app.js?v=12" type="module"></script>
 </body>
 </html>

@@ -473,7 +473,10 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 .cam-pop .settings-row b { font-weight: 500; color: var(--ink); font-size: 12.5px; }
 .cam-pop .settings-row small { font-size: 11px; color: var(--ink-dim); }
 .cam-note { color: var(--ink-dim) !important; border-top: 1px solid var(--line); margin-top: 2px; padding-top: 8px !important; }
-.session.is-camera .stage { cursor: default !important; }
+.session.is-camera .stage { cursor: crosshair !important; }
+.focus-ring { position: absolute; width: 64px; height: 64px; margin: -32px 0 0 -32px; border: 1.5px solid var(--accent); border-radius: 4px; pointer-events: none; z-index: 5; animation: focusRing 1.6s var(--ease, ease) forwards; box-shadow: 0 0 0 1px rgba(0,0,0,.35); }
+@keyframes focusRing { 0% { transform: scale(1.6); opacity: 0; } 18% { transform: scale(1); opacity: 1; } 70% { opacity: 1; } 100% { opacity: 0; } }
+.cam-pop .cam-focus-reset { width: 100%; margin-top: 4px; }
 .snap-flash { position: absolute; inset: 0; background: #fff; pointer-events: none; z-index: 5; }
 
 /* ── MACHINE MENU ─────────────────────────────────────── */

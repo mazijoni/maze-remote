@@ -24,6 +24,7 @@ type CameraConfig struct {
 	VFlip    bool   `json:"vflip"`
 	HDR      bool   `json:"hdr"`     // high dynamic range (bright windows + dark room)
 	Night    bool   `json:"night"`   // allow long exposures for dark rooms
+	Focus    string `json:"focus"`   // "x,y" (0..1 of the picture) to focus on, "" = whole picture
 	Command  string `json:"command"` // capture program, default "rpicam-vid"
 }
 
@@ -76,6 +77,10 @@ func cameraCommands(cfg Config, es encodeSettings) (*exec.Cmd, *exec.Cmd) {
 	if c.VFlip {
 		camArgs = append(camArgs, "--vflip")
 	}
+	if win := c.focusWindow(); win != "" {
+		// keep focusing continuously, but only on that spot
+		camArgs = append(camArgs, "--autofocus-mode", "continuous", "--autofocus-window", win)
+	}
 	cam := exec.Command(c.Command, camArgs...)
 
 	fitScale := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", es.MaxW, es.MaxH)
@@ -85,6 +90,36 @@ func cameraCommands(cfg Config, es encodeSettings) (*exec.Cmd, *exec.Cmd) {
 		"-vf", fitScale + ",format=yuv420p"}
 	ffArgs = append(ffArgs, encoderArgs(cfg, es, fmt.Sprint(es.GOP))...)
 	return cam, exec.Command(cfg.FFmpeg, ffArgs...)
+}
+
+// focusWindow turns the tapped point into rpicam's autofocus window
+// "x,y,w,h" (fractions of the sensor). The sensor sees the picture before
+// flips/rotation, so mirror the point back.
+func (c *CameraConfig) focusWindow() string {
+	x, y, ok := parseFocus(c.Focus)
+	if !ok {
+		return ""
+	}
+	if c.Rotation == 180 {
+		x, y = 1-x, 1-y
+	}
+	if c.HFlip {
+		x = 1 - x
+	}
+	if c.VFlip {
+		y = 1 - y
+	}
+	const size = 0.2
+	l := min(max(x-size/2, 0), 1-size)
+	t := min(max(y-size/2, 0), 1-size)
+	return fmt.Sprintf("%.3f,%.3f,%.3f,%.3f", l, t, size, size)
+}
+
+func parseFocus(s string) (x, y float64, ok bool) {
+	if _, err := fmt.Sscanf(s, "%f,%f", &x, &y); err != nil || x < 0 || x > 1 || y < 0 || y > 1 {
+		return 0, 0, false
+	}
+	return x, y, true
 }
 
 // Camera settings changed from the website are saved next to the config, so
@@ -100,7 +135,8 @@ type cameraOpts struct {
 	Res   string `json:"res"` // "720p" or "1080p"
 	HDR   bool   `json:"hdr"`
 	Night bool   `json:"night"`
-	Flip  bool   `json:"flip"` // rotated 180°
+	Flip  bool   `json:"flip"`  // rotated 180°
+	Focus string `json:"focus"` // tapped focus point, "" = whole picture
 }
 
 func (c *CameraConfig) opts() cameraOpts {
@@ -108,7 +144,7 @@ func (c *CameraConfig) opts() cameraOpts {
 	if c.Height >= 1080 {
 		res = "1080p"
 	}
-	return cameraOpts{Res: res, HDR: c.HDR, Night: c.Night, Flip: c.Rotation == 180}
+	return cameraOpts{Res: res, HDR: c.HDR, Night: c.Night, Flip: c.Rotation == 180, Focus: c.Focus}
 }
 
 func (c *CameraConfig) apply(o cameraOpts) {
@@ -117,7 +153,7 @@ func (c *CameraConfig) apply(o cameraOpts) {
 	} else {
 		c.Width, c.Height = 1280, 720
 	}
-	c.HDR, c.Night = o.HDR, o.Night
+	c.HDR, c.Night, c.Focus = o.HDR, o.Night, o.Focus
 	c.Rotation = 0
 	if o.Flip {
 		c.Rotation = 180
@@ -167,6 +203,10 @@ func (a *Agent) setCamera(s *Session, key, val string) {
 		o.Night = on
 	case "flip":
 		o.Flip = on
+	case "focus":
+		if _, _, ok := parseFocus(val); ok || val == "" {
+			o.Focus = val
+		}
 	default:
 		a.mu.Unlock()
 		return
@@ -192,10 +232,14 @@ func (a *Agent) setCamera(s *Session, key, val string) {
 		s.stallStage, s.stalled, s.lastFrame = 0, false, time.Now()
 		a.mu.Unlock()
 		a.restartCapture(s)
-		names := map[string]string{"res": "1080p", "hdr": "HDR", "night": "Night mode", "flip": "Flip"}
+		names := map[string]string{"res": "1080p", "hdr": "HDR", "night": "Night mode", "flip": "Flip", "focus": "tap to focus"}
 		a.status(dc, "")
 		if dc != nil {
-			b, _ := json.Marshal(map[string]any{"t": "toast", "s": "Your camera doesn't support " + names[key] + " — turned it back off", "bad": true})
+			msg := "Your camera doesn't support " + names[key] + " — turned it back off"
+			if key == "focus" {
+				msg = "This camera can't focus on a spot (only Camera Module 3 has autofocus)"
+			}
+			b, _ := json.Marshal(map[string]any{"t": "toast", "s": msg, "bad": true})
 			_ = dc.SendText(string(b))
 		}
 	}

@@ -70,6 +70,7 @@ sudo tee /etc/systemd/system/maze-remote-camera.service >/dev/null <<EOF
 Description=Maze Remote camera agent
 After=network-online.target maze-remote.service
 Wants=network-online.target
+StartLimitIntervalSec=0
 
 [Service]
 User=$USER
