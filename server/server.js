@@ -160,10 +160,18 @@ const server = http.createServer((req, res) => {
   if (p.endsWith("/")) p += "index.html";
   const file = path.resolve(WEB_DIR, "." + p);
   if (!file.startsWith(WEB_DIR)) { res.writeHead(403); return res.end(); }
-  fs.readFile(file, (err, data) => {
-    if (err) { res.writeHead(404); return res.end("Not found"); }
-    res.writeHead(200, { "content-type": MIME[path.extname(file)] || "application/octet-stream" });
-    res.end(data);
+  // Always let browsers check for a newer version (cheap: unchanged files get
+  // a 304), so after an update the page and its script never get mixed up.
+  fs.stat(file, (err, st) => {
+    if (err || !st.isFile()) { res.writeHead(404); return res.end("Not found"); }
+    const etag = `"${st.size.toString(36)}-${Math.floor(st.mtimeMs).toString(36)}"`;
+    const headers = { "cache-control": "no-cache", etag };
+    if (req.headers["if-none-match"] === etag) { res.writeHead(304, headers); return res.end(); }
+    fs.readFile(file, (err, data) => {
+      if (err) { res.writeHead(404); return res.end("Not found"); }
+      res.writeHead(200, { ...headers, "content-type": MIME[path.extname(file)] || "application/octet-stream" });
+      res.end(data);
+    });
   });
 });
 
