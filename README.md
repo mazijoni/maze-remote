@@ -113,6 +113,10 @@ bash scripts/pi-camera.sh
 
 Settings live in `~/maze-remote-agent/maze-remote-camera.json` (`width`, `height`, `fps`, `rotation: 180`, `hflip`, `vflip`); apply changes with `sudo systemctl restart maze-remote-camera`. The 📷 toolbar button saves a snapshot of any session as a PNG.
 
+### Server stats
+
+The dashboard shows a live strip with the Pi's CPU, temperature, memory and disk above your machines. Click it (or the ♥ button in the sidebar) for the full view: per-core CPU, load, clock speed, fan speed, network traffic with graphs, IP address, uptime, and warnings when the Pi is throttled or short on power (from `vcgencmd get_throttled`). The server reads everything from `/proc` and `/sys` every 2 seconds and only sends it to signed-in browsers; nothing to set up besides updating the server.
+
 ### 3. Access from anywhere (remote.maze-development.com)
 
 **Website + signaling — Cloudflare Tunnel.** Gives the Pi a public HTTPS address without opening any ports on your router. Your domain's DNS must be on Cloudflare.

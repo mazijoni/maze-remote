@@ -188,6 +188,7 @@ async function enterDashboard() {
   if (state.demo) {
     setConn("demo", "Demo mode");
     renderHosts(DEMO_HOSTS, true);
+    startDemoStats();
   } else {
     renderHosts(null, true);
     connectSignaling();
@@ -199,6 +200,8 @@ function logout() {
   if (state.ws) { state.ws.onclose = null; state.ws.close(); state.ws = null; }
   store.del("token");
   Object.assign(state, { token: "", demo: false, hosts: [] });
+  stopDemoStats();
+  hideStats();
   showView("view-login");
 }
 $("#btn-logout").addEventListener("click", logout);
@@ -346,6 +349,10 @@ function connectSignaling() {
         if (m.ice) state.ice = m.ice;
         setConn("ok", "Server connected");
         renderHosts(m.hosts || [], true);
+        ws.send(JSON.stringify({ type: "stats-sub", on: true }));
+        break;
+      case "stats":
+        renderStats(m.stats);
         break;
       case "hosts":
         renderHosts(m.hosts || []);
@@ -376,6 +383,152 @@ function connectSignaling() {
     const delay = Math.min(1000 * 2 ** state.wsRetry++, 15000);
     setTimeout(() => { if (state.ws === ws && state.token) connectSignaling(); }, delay);
   };
+}
+
+// ---------------- server stats ----------------
+// The Pi (or whatever box runs the server) pushes its stats every 2 s.
+// Older servers never send any, so the strip just stays hidden.
+let lastStats = null;
+
+const fmtBytes = (n, d = 1) => {
+  if (n === null || n === undefined) return "—";
+  const u = ["B", "KB", "MB", "GB", "TB"]; let i = 0;
+  while (n >= 1024 && i < u.length - 1) { n /= 1024; i++; }
+  return (i === 0 ? Math.round(n) : n.toFixed(n >= 100 ? 0 : d)) + " " + u[i];
+};
+const fmtRate = (n) => (n === null || n === undefined ? "—" : fmtBytes(n) + "/s");
+const fmtPct = (n) => (n === null || n === undefined ? "—" : Math.round(n) + "%");
+function fmtUptime(sec) {
+  if (!sec && sec !== 0) return "—";
+  const d = Math.floor(sec / 86400), h = Math.floor((sec % 86400) / 3600), m = Math.floor((sec % 3600) / 60);
+  return d ? `${d}d ${h}h` : h ? `${h}h ${m}m` : `${m}m`;
+}
+// colour by how worried you should be
+const level = (v, warn, bad) => (v === null || v === undefined ? "" : v >= bad ? "bad" : v >= warn ? "warn" : "ok");
+const tempLevel = (t) => level(t, 70, 80); // Pi 5 starts throttling at 80–85 °C
+
+// line path through the values, scaled to the box; `max` fixed or from the data
+function sparkPath(vals, w, h, max) {
+  const pts = vals.map((v, i) => [i, v]).filter(([, v]) => v !== null && v !== undefined);
+  if (pts.length < 2) return { line: "", area: "" };
+  const top = max || Math.max(1, ...pts.map(([, v]) => v)) * 1.15;
+  const n = Math.max(vals.length - 1, 1);
+  const xy = pts.map(([i, v]) => [(i / n) * w, h - Math.min(1, v / top) * (h - 2) - 1]);
+  const line = "M" + xy.map(([x, y]) => x.toFixed(1) + " " + y.toFixed(1)).join("L");
+  return { line, area: `${line}L${xy[xy.length - 1][0].toFixed(1)} ${h}L${xy[0][0].toFixed(1)} ${h}Z` };
+}
+function drawChart(svg, series, max) {
+  const [, , w, h] = svg.getAttribute("viewBox").split(" ").map(Number);
+  const lines = $$("path.line", svg);
+  series.forEach((vals, i) => { if (lines[i]) lines[i].setAttribute("d", sparkPath(vals, w, h, max).line); });
+  const area = $("path.area", svg);
+  if (area) area.setAttribute("d", sparkPath(series[0], w, h, max).area);
+}
+function setBar(el, pct) {
+  el.firstElementChild.style.width = Math.max(0, Math.min(100, pct || 0)) + "%";
+  el.dataset.level = level(pct, 75, 90);
+}
+
+function renderStats(s) {
+  if (!s) return;
+  lastStats = s;
+  const strip = $("#server-strip");
+  if (strip.hidden) {
+    strip.hidden = false;
+    $("#btn-server").hidden = false;
+    animate(strip, [{ opacity: 0, transform: "translateY(6px)" }, { opacity: 1, transform: "none" }], { duration: 320, easing: EASE_OUT });
+  }
+  const mem = s.memory || {}, disk = s.disk, t = s.temp || {}, cpu = s.cpu || {}, net = s.network || {}, h = s.history || {};
+  const memPct = mem.total ? (100 * mem.used) / mem.total : null;
+  const diskPct = disk ? (100 * disk.used) / (disk.used + disk.free) : null;
+  const tempTxt = t.cpu === null || t.cpu === undefined ? "—" : Math.round(t.cpu) + "°C";
+  const throttledNow = t.throttled && t.throttled.now.length;
+
+  // --- strip ---
+  $("#ss-host").textContent = s.info.hostname;
+  $("#ss-sub").textContent = "Up " + fmtUptime(s.uptime) + (throttledNow ? " · " + t.throttled.now[0] : "");
+  $("#ss-sub").classList.toggle("bad", !!throttledNow);
+  const tile = (k, txt, lvl) => { const el = $(`.ss-tile[data-k="${k}"]`, strip); $("b", el).textContent = txt; el.dataset.level = lvl; return el; };
+  drawChart($("svg", tile("cpu", fmtPct(cpu.usage), level(cpu.usage, 70, 90))), [h.cpu || []], 100);
+  const tt = tile("temp", tempTxt, tempLevel(t.cpu));
+  tt.hidden = t.cpu === null || t.cpu === undefined;
+  drawChart($("svg", tt), [h.temp || []], 90);
+  setBar($(".bar", tile("mem", fmtPct(memPct), level(memPct, 75, 90))), memPct);
+  const dt = tile("disk", fmtPct(diskPct), level(diskPct, 80, 92));
+  dt.hidden = !disk;
+  setBar($(".bar", dt), diskPct);
+
+  // --- detail modal (only while it's open) ---
+  if ($("#modal-server").hidden) return;
+  $("#sv-host").textContent = s.info.hostname;
+  $("#sv-live").textContent = "live · every " + Math.round((s.interval || 2000) / 1000) + " s";
+
+  const warn = [];
+  if (t.throttled && t.throttled.now.length) warn.push("Right now: " + t.throttled.now.join(", ") + ".");
+  else if (t.throttled && t.throttled.sinceBoot.length) warn.push("Since boot: " + t.throttled.sinceBoot.join(", ") + ".");
+  if (t.throttled && (t.throttled.now.includes("Under-voltage") || t.throttled.sinceBoot.includes("Under-voltage"))) warn.push("Use the official 27 W USB-C power supply.");
+  $("#sv-warn").hidden = !warn.length;
+  $("#sv-warn").textContent = warn.join(" ");
+
+  const big = (id, txt, lvl, sub) => { const b = $("#" + id); b.textContent = txt; b.dataset.level = lvl || ""; if (sub !== undefined) $("#" + id + "-sub").textContent = sub; };
+  big("sv-cpu", fmtPct(cpu.usage), level(cpu.usage, 70, 90),
+    [cpu.freqMHz ? (cpu.freqMHz >= 1000 ? (cpu.freqMHz / 1000).toFixed(1) + " GHz" : cpu.freqMHz + " MHz") : "", cpu.load ? "load " + cpu.load.join(" · ") : ""].filter(Boolean).join("  ·  "));
+  drawChart($("#sv-cpu-chart"), [h.cpu || []], 100);
+  const cores = $("#sv-cores");
+  if (cores.children.length !== (cpu.perCore || []).length) {
+    cores.innerHTML = (cpu.perCore || []).map((_, i) => `<span><small>${i}</small><i class="bar"><i></i></i></span>`).join("");
+  }
+  (cpu.perCore || []).forEach((v, i) => setBar($(".bar", cores.children[i]), v));
+
+  big("sv-temp", tempTxt, tempLevel(t.cpu), [t.fanRpm === null || t.fanRpm === undefined ? "" : t.fanRpm ? "fan " + t.fanRpm + " rpm" : "fan off", t.cpu >= 80 ? "throttling range" : ""].filter(Boolean).join("  ·  "));
+  $("#sv-temp-chart").closest(".sv-card").hidden = t.cpu === null || t.cpu === undefined;
+  drawChart($("#sv-temp-chart"), [h.temp || []], 90);
+
+  big("sv-mem", fmtPct(memPct), level(memPct, 75, 90), fmtBytes(mem.used) + " of " + fmtBytes(mem.total));
+  setBar($("#sv-mem-bar"), memPct);
+  $("#sv-swap").textContent = mem.swapTotal ? "Swap " + fmtBytes(mem.swapUsed) + " of " + fmtBytes(mem.swapTotal) : "";
+
+  $("#sv-disk-bar").closest(".sv-card").hidden = !disk;
+  if (disk) {
+    big("sv-disk", fmtPct(diskPct), level(diskPct, 80, 92), fmtBytes(disk.free) + " free of " + fmtBytes(disk.used + disk.free));
+    setBar($("#sv-disk-bar"), diskPct);
+  }
+
+  $("#sv-rx").textContent = fmtRate(net.rxRate);
+  $("#sv-tx").textContent = fmtRate(net.txRate);
+  drawChart($("#sv-net-chart"), [h.rx || [], h.tx || []]);
+
+  const rows = {
+    Model: s.info.model,
+    System: s.info.os,
+    Kernel: s.info.kernel + " · " + s.info.arch,
+    "IP address": (net.addresses || []).map((a) => a.address + " (" + a.iface + ")").join(", "),
+    "Uptime": fmtUptime(s.uptime),
+    "Data since boot": "↓ " + fmtBytes(net.rxTotal) + "  ↑ " + fmtBytes(net.txTotal),
+    "Server running": fmtUptime(s.server && s.server.uptime) + " · " + fmtBytes(s.server && s.server.rss) + " RAM · Node " + s.info.node.replace(/^v/, ""),
+    "Connected": s.server ? `${s.server.hosts} machine${s.server.hosts === 1 ? "" : "s"} · ${s.server.viewers} browser${s.server.viewers === 1 ? "" : "s"}` : null,
+  };
+  $("#sv-info").innerHTML = "";
+  for (const [k, v] of Object.entries(rows)) {
+    if (!v) continue;
+    const dt = document.createElement("dt"), dd = document.createElement("dd");
+    dt.textContent = k; dd.textContent = v;
+    $("#sv-info").append(dt, dd);
+  }
+}
+
+function openServerStats() {
+  if (!lastStats) return;
+  openModal("modal-server");
+  renderStats(lastStats);
+}
+$("#server-strip").addEventListener("click", openServerStats);
+$("#btn-server").addEventListener("click", openServerStats);
+
+function hideStats() {
+  lastStats = null;
+  $("#server-strip").hidden = true;
+  $("#btn-server").hidden = true;
 }
 
 function sendSignal(msg) {
@@ -1006,6 +1159,37 @@ const DEMO_HOSTS = [
   { id: "demo-pi", name: "raspberrypi", os: "linux", since: Date.now() - 1000 * 60 * 60 * 26 },
   { id: "demo-old", name: "Old Tower", os: "windows", online: false },
 ];
+
+// fake Raspberry Pi stats for the demo, wandering around believable values
+let demoStatsTimer = null;
+function startDemoStats() {
+  stopDemoStats();
+  const hist = { cpu: [], temp: [], rx: [], tx: [] };
+  const boot = Date.now() - 1000 * 60 * 60 * 26.4, start = Date.now();
+  let cpu = 18, temp = 52, mem = 1.9e9;
+  const wander = (v, lo, hi, step) => Math.max(lo, Math.min(hi, v + (Math.random() - 0.5) * step));
+  const tick = () => {
+    cpu = wander(cpu, 6, 80, 16); temp = wander(temp + (46 + cpu * 0.3 - temp) * 0.15, 44, 74, 1.5); mem = wander(mem, 1.6e9, 2.6e9, 1.2e8);
+    const rx = Math.round(2e5 + Math.random() * 2.2e6 * (cpu / 50)), tx = Math.round(4e5 + Math.random() * 5e6 * (cpu / 50));
+    const per = [0, 1, 2, 3].map(() => Math.round(wander(cpu, 0, 100, 30)));
+    for (const [k, v] of Object.entries({ cpu: Math.round(cpu * 10) / 10, temp: Math.round(temp * 10) / 10, rx, tx })) { hist[k].push(v); if (hist[k].length > 90) hist[k].shift(); }
+    renderStats({
+      at: Date.now(), interval: 2000,
+      info: { hostname: "raspberrypi", model: "Raspberry Pi 5 Model B Rev 1.0", os: "Debian GNU/Linux 12 (bookworm)", kernel: "6.6.51+rpt-rpi-2712", arch: "arm64", cores: 4, node: "v20.18.0" },
+      uptime: Math.round((Date.now() - boot) / 1000),
+      cpu: { usage: Math.round(cpu * 10) / 10, perCore: per, load: [cpu / 25, cpu / 28, cpu / 30].map((n) => Math.round(n * 100) / 100), freqMHz: cpu > 25 ? 2400 : 1500 },
+      temp: { cpu: Math.round(temp * 10) / 10, fanRpm: temp > 60 ? 3100 : temp > 50 ? 1900 : 0, throttled: { now: [], sinceBoot: [] } },
+      memory: { total: 8.45e9, used: mem, swapTotal: 5.2e8, swapUsed: 1.1e7 },
+      disk: { path: "/", total: 6.2e10, used: 1.43e10, free: 4.45e10 },
+      network: { rxRate: rx, txRate: tx, rxTotal: 3.81e10, txTotal: 9.22e10, addresses: [{ iface: "eth0", address: "192.168.1.42" }] },
+      server: { uptime: Math.round((Date.now() - start) / 1000) + 3600 * 5, rss: 6.1e7, hosts: 3, viewers: 1 },
+      history: hist,
+    });
+  };
+  for (let i = 0; i < 40; i++) tick();
+  demoStatsTimer = setInterval(tick, 2000);
+}
+function stopDemoStats() { clearInterval(demoStatsTimer); demoStatsTimer = null; }
 
 class DemoSession {
   constructor(host) {
