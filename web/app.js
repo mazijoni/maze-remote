@@ -203,8 +203,8 @@ function logout() {
 }
 $("#btn-logout").addEventListener("click", logout);
 $("#btn-settings").addEventListener("click", () => openModal("modal-settings"));
-$("#btn-add").addEventListener("click", openAddModal);
-$("#btn-add-2").addEventListener("click", openAddModal);
+$("#btn-add").addEventListener("click", () => openAddModal());
+$("#btn-add-2").addEventListener("click", () => openAddModal());
 
 
 const OS_ICONS = { windows: "desktop_windows", linux: "terminal", darwin: "laptop_mac", default: "computer" };
@@ -231,7 +231,7 @@ function renderHosts(hosts, animateIn = false) {
   }
   if (list.length === 0) {
     grid.innerHTML = '<div class="empty-state"><span class="material-symbols-outlined">desktop_access_disabled</span><p>No machines online yet</p><p class="sub">Run the agent on a PC and it shows up here automatically.</p><button class="btn btn-primary"><span class="material-symbols-outlined">add</span>Set up a machine</button></div>';
-    $(".empty-state .btn", grid).addEventListener("click", openAddModal);
+    $(".empty-state .btn", grid).addEventListener("click", () => openAddModal());
     return;
   }
   list.forEach((h, i) => {
@@ -255,14 +255,40 @@ function renderHosts(hosts, animateIn = false) {
   });
 }
 
-function openAddModal() {
-  const server = state.demo ? "ws://raspberrypi.local:8080/ws" : wsURL(state.server);
-  $("#add-config").textContent = JSON.stringify({ server, secret: "YOUR_HOST_SECRET", name: "My PC", encoder: "x264", fps: 60, bitrate: "8M" }, null, 2);
+function openAddModal(tab = "win") {
+  // config with this server's address filled in (wss://… when opened over HTTPS)
+  const server = state.demo ? "wss://remote.maze-development.com/ws" : wsURL(state.server);
+  $("#add-config").textContent = JSON.stringify({ server, secret: "PASTE_YOUR_HOST_SECRET", name: "My PC", encoder: "x264", fps: 60, bitrate: "8M" }, null, 2);
+  showTab(tab, false);
   openModal("modal-add");
 }
-$("#btn-copy-config").addEventListener("click", async () => {
-  try { await navigator.clipboard.writeText($("#add-config").textContent); toast("Config copied", "ok"); }
-  catch { toast("Couldn't copy — select it manually", "bad"); }
+$("#btn-help").addEventListener("click", () => openAddModal("tips"));
+
+// tabs: the outgoing panel fades out, the new one slides in
+async function showTab(name, animated = true) {
+  const cur = $("#modal-add .tab-panel:not([hidden])");
+  const next = $(`#modal-add .tab-panel[data-panel="${name}"]`);
+  $$("#modal-add .tab").forEach((t) => t.classList.toggle("active", t.dataset.tab === name));
+  if (cur === next) return;
+  if (cur && animated) await animate(cur, [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "translateX(-8px)" }], { duration: 120, easing: EASE_IN });
+  if (cur) { cur.hidden = true; cur.getAnimations().forEach((x) => x.cancel()); }
+  next.hidden = false;
+  $("#modal-add").scrollTop = 0;
+  if (animated) await animate(next, [{ opacity: 0, transform: "translateX(10px)" }, { opacity: 1, transform: "none" }], { duration: 240, easing: EASE_OUT });
+  next.getAnimations().forEach((x) => x.cancel());
+}
+$("#modal-add .tabs").addEventListener("click", (e) => { const t = e.target.closest(".tab"); if (t) showTab(t.dataset.tab); });
+
+// copy buttons on every code box
+$("#modal-add").addEventListener("click", async (e) => {
+  const b = e.target.closest(".copy");
+  if (!b) return;
+  try {
+    await navigator.clipboard.writeText(b.previousElementSibling.textContent);
+    const icon = $(".material-symbols-outlined", b);
+    b.classList.add("done"); icon.textContent = "check";
+    setTimeout(() => { b.classList.remove("done"); icon.textContent = "content_copy"; }, 1400);
+  } catch { toast("Couldn't copy — select it manually", "bad"); }
 });
 
 // ---------------- signaling ----------------

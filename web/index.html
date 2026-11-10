@@ -80,6 +80,7 @@
         <div class="rail-sections">
           <button class="rail-btn active" title="Machines"><span class="material-symbols-outlined">desktop_windows</span></button>
           <button class="rail-btn" id="btn-add" title="Add a machine"><span class="material-symbols-outlined">add_to_queue</span></button>
+          <button class="rail-btn" id="btn-help" title="How-to &amp; fixes"><span class="material-symbols-outlined">help</span></button>
         </div>
         <div class="rail-spacer"></div>
         <div class="rail-bottom">
@@ -183,24 +184,111 @@
   <div class="modal-root" id="modal-root" hidden>
     <div class="scrim" data-close-modal></div>
 
-    <div class="modal modal-wide" id="modal-add" role="dialog" aria-labelledby="add-title" hidden>
+    <div class="modal modal-guide" id="modal-add" role="dialog" aria-labelledby="add-title" hidden>
       <div class="modal-head">
         <div>
-          <p class="view-eyebrow">Setup</p>
-          <h3 class="modal-title" id="add-title">Add a <em>machine</em></h3>
+          <p class="view-eyebrow">How-to</p>
+          <h3 class="modal-title" id="add-title">Setup &amp; <em>help</em></h3>
         </div>
         <button class="btn btn-ghost btn-icon" data-close-modal aria-label="Close"><span class="material-symbols-outlined">close</span></button>
       </div>
-      <ol class="steps">
-        <li><strong>Install ffmpeg</strong> on the PC <code>winget install Gyan.FFmpeg</code></li>
-        <li><strong>Download the agent</strong> <code>maze-remote-agent.exe</code> from <a class="link" href="https://github.com/mazijoni/maze-remote/releases/latest" target="_blank" rel="noopener">the latest release</a>.</li>
-        <li><strong>Create <code>maze-remote.json</code></strong> next to it
-          <pre id="add-config"></pre>
-          <button class="btn" id="btn-copy-config"><span class="material-symbols-outlined">content_copy</span>Copy</button>
-        </li>
-        <li><strong>Run the agent.</strong> The PC appears here within a few seconds.</li>
-      </ol>
-      <p class="hint">NVIDIA GPU? Set <code>"encoder": "nvenc"</code> for lower latency. AMD <code>"amf"</code> · Intel <code>"qsv"</code></p>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" role="tab" data-tab="win"><span class="material-symbols-outlined">desktop_windows</span>Windows PC</button>
+        <button class="tab" role="tab" data-tab="pi"><span class="material-symbols-outlined">memory</span>Raspberry Pi</button>
+        <button class="tab" role="tab" data-tab="tips"><span class="material-symbols-outlined">build</span>Fixes</button>
+      </div>
+
+      <!-- ── WINDOWS ── -->
+      <section class="tab-panel" data-panel="win">
+        <ol class="steps">
+          <li><strong>Install ffmpeg</strong> — the agent uses it to capture the screen. In PowerShell:
+            <div class="code"><pre>winget install Gyan.FFmpeg</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div>
+            Then close PowerShell and open a new one.</li>
+
+          <li><strong>Download the agent</strong> into its own folder (<code>C:\Users\&lt;you&gt;\MazeRemote</code>):
+            <div class="code"><pre>mkdir $HOME\MazeRemote -Force; cd $HOME\MazeRemote
+iwr https://github.com/mazijoni/maze-remote/releases/latest/download/maze-remote-agent.exe -OutFile maze-remote-agent.exe</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div></li>
+
+          <li><strong>Create the settings file</strong> — run <code>notepad maze-remote.json</code> in that folder and paste:
+            <div class="code"><pre id="add-config"></pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div>
+            Get the <b>secret</b> on the Pi with <code>grep MR_HOST_SECRET ~/maze-remote/server/.env</code> (the part after <code>=</code>).
+            <span class="note">NVIDIA GPU? Use <code>"encoder": "nvenc"</code> for lower latency · AMD <code>"amf"</code> · Intel <code>"qsv"</code></span></li>
+
+          <li><strong>Allow it through the firewall</strong> — PowerShell <em>as administrator</em>:
+            <div class="code"><pre>New-NetFirewallRule -DisplayName "Maze Remote agent" -Direction Inbound -Program "$HOME\MazeRemote\maze-remote-agent.exe" -Action Allow -Profile Any</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div></li>
+
+          <li><strong>Install the virtual screen driver</strong> <span class="badge">Recommended</span> — lets you connect while the monitors sleep. Approve the admin prompt:
+            <div class="code"><pre>iwr https://builds.parsec.app/vdd/parsec-vdd-0.41.0.0.exe -OutFile $env:TEMP\parsec-vdd.exe
+Start-Process $env:TEMP\parsec-vdd.exe -ArgumentList '/S' -Verb RunAs -Wait</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div></li>
+
+          <li><strong>Windows settings for remote use</strong>
+            <ul class="checklist">
+              <li><b>Settings → System → Power</b> → <i>Make my device sleep after</i>: <b>Never</b> (the screen may still turn off)</li>
+              <li><b>Settings → Accounts → Sign-in options</b> → <i>If you've been away, when should Windows require you to sign in again?</i>: <b>Never</b>, and turn off <i>Dynamic lock</i> — apps can't see the lock screen</li>
+            </ul></li>
+
+          <li><strong>Run the agent</strong> from the folder:
+            <div class="code"><pre>cd $HOME\MazeRemote; .\maze-remote-agent.exe</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div>
+            It prints <code>online as "My PC"</code> and the PC appears here. Keep the window open. If SmartScreen warns, click <i>More info → Run anyway</i>.</li>
+        </ol>
+        <div class="callout">
+          <span class="material-symbols-outlined">update</span>
+          <div><b>Updating the agent:</b> press <kbd>Ctrl</kbd>+<kbd>C</kbd> in its window, then run step 2's download line again and start it.</div>
+        </div>
+      </section>
+
+      <!-- ── RASPBERRY PI ── -->
+      <section class="tab-panel" data-panel="pi" hidden>
+        <ol class="steps">
+          <li><strong>Update the server &amp; website</strong> — over SSH:
+            <div class="code"><pre>cd ~/maze-remote &amp;&amp; git pull &amp;&amp; sudo systemctl restart maze-remote</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div>
+            Then reload this page with <kbd>Ctrl</kbd>+<kbd>F5</kbd> (on a phone: close the tab and reopen).</li>
+
+          <li><strong>Show the Pi itself as a machine</strong> — installs and autostarts the Pi agent:
+            <div class="code"><pre>bash ~/maze-remote/scripts/pi-agent.sh</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div>
+            If it says the desktop uses Wayland, switch to X11 and reboot:
+            <div class="code"><pre>sudo raspi-config nonint do_wayland W1 &amp;&amp; sudo reboot</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div></li>
+
+          <li><strong>Change the website password</strong> — edit <code>MR_PASSWORD</code>, save with <kbd>Ctrl</kbd>+<kbd>O</kbd>, exit with <kbd>Ctrl</kbd>+<kbd>X</kbd>:
+            <div class="code"><pre>nano ~/maze-remote/server/.env &amp;&amp; sudo systemctl restart maze-remote</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div>
+            Don't change <code>MR_HOST_SECRET</code> — your machines use it to connect.</li>
+
+          <li><strong>Check that things are running</strong>
+            <div class="code"><pre>journalctl -u maze-remote -n 15 --no-pager    # server — look for "TURN relay: Cloudflare"
+systemctl status cloudflared --no-pager       # remote.maze-development.com tunnel
+tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button class="copy" aria-label="Copy"><span class="material-symbols-outlined">content_copy</span></button></div></li>
+        </ol>
+      </section>
+
+      <!-- ── FIXES ── -->
+      <section class="tab-panel" data-panel="tips" hidden>
+        <dl class="faq">
+          <dt><span class="material-symbols-outlined">bedtime</span>No picture when the monitors are asleep</dt>
+          <dd>Install the <b>virtual screen driver</b> (Windows step 5). The agent then shows a <i>Virtual screen</i> while the monitors are off and removes it when you disconnect. If your windows stay on the sleeping monitors, move one over with <kbd>Win</kbd>+<kbd>Shift</kbd>+<kbd>←</kbd>/<kbd>→</kbd>.</dd>
+
+          <dt><span class="material-symbols-outlined">lock</span>"Your PC is locked"</dt>
+          <dd>Windows doesn't let apps capture the lock screen. Set sign-in after being away to <b>Never</b> (Windows step 6), or unlock the PC at the desk.</dd>
+
+          <dt><span class="material-symbols-outlined">signal_cellular_alt</span>Slow or no picture on mobile data</dt>
+          <dd>Open the <span class="material-symbols-outlined inline">tune</span> quality menu in the toolbar and pick <b>Low</b>. Auto already uses Balanced through the relay. Your home upload speed is usually the limit.</dd>
+
+          <dt><span class="material-symbols-outlined">wifi_off</span>"Couldn't reach the host" / works at home only</dt>
+          <dd>The relay must be on: the server log should say <code>TURN relay: Cloudflare</code> (Pi tab, step 4). Then sign out and in again so the browser gets the relay details.</dd>
+
+          <dt><span class="material-symbols-outlined">power_off</span>The PC shows as Offline</dt>
+          <dd>The PC is asleep or the agent window was closed. Set the PC to never sleep (Windows step 6) and keep the agent running.</dd>
+
+          <dt><span class="material-symbols-outlined">dns</span>The site won't open on a work or school network</dt>
+          <dd>Some networks block new or remote-access sites ("Non-existent domain"). Use mobile data instead, or ask that network's IT.</dd>
+
+          <dt><span class="material-symbols-outlined">mouse</span>Mouse &amp; keyboard tips</dt>
+          <dd>Your pointer is drawn locally so it's instant. Click the screen to send your keyboard. <span class="material-symbols-outlined inline">fullscreen</span> Fullscreen also captures <kbd>Alt</kbd>+<kbd>Tab</kbd> and the Windows key; <span class="material-symbols-outlined inline">keyboard</span> sends shortcuts like Task Manager. Move to the top edge to bring the toolbar back.</dd>
+
+          <dt><span class="material-symbols-outlined">desktop_windows</span>Several monitors</dt>
+          <dd>Use the screen button in the toolbar to switch monitor or show <b>All screens</b>. Your choice is remembered per PC.</dd>
+        </dl>
+      </section>
     </div>
 
     <div class="modal" id="modal-settings" role="dialog" aria-labelledby="settings-title" hidden>
