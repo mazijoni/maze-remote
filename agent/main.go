@@ -18,11 +18,17 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/cc"
+	"github.com/pion/interceptor/pkg/gcc"
 	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 )
 
-var version = "0.2.0"
+var version = "0.4.0"
+
+// configPath is the config file in use (camera settings are saved beside it).
+var configPath string
 
 type Config struct {
 	Server  string `json:"server"`
@@ -125,8 +131,10 @@ func loadConfig() Config {
 		cfg.Test = true
 	}
 
+	configPath = *cfgPath
 	if cfg.Camera != nil {
 		cfg.Camera.defaults()
+		loadCameraSettings(cfg.Camera)
 	}
 	if cfg.Server == "" || cfg.Secret == "" {
 		fmt.Println("Maze Remote agent", version)
@@ -162,18 +170,23 @@ type Session struct {
 	track        *webrtc.TrackLocalStaticSample
 	cap          *Capture
 	dc           *webrtc.DataChannel
-	quality      string       // what the viewer chose: auto, high, balanced, low
-	level        string       // what is actually streaming: high, balanced, low
-	relayed      bool         // video goes through the TURN relay
-	started      time.Time    // when the current capture started
-	lastKF       time.Time    // last keyframe-driven restart
-	stalled      bool         // screen is giving no picture; don't restart for keyframes
-	localCursor  bool         // viewer draws the pointer itself
-	moveSeq      atomic.Int64 // newest mouse position applied (positions can arrive out of order)
-	stallStage   int          // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
-	vIdx         int          // virtual screen plugged in for this session (-1 none)
-	triedVirtual bool         // already tried adding one
-	lastFrame    time.Time    // when the screen last produced a picture
+	quality      string                // what the viewer chose: auto, high, balanced, low
+	level        string                // what is actually streaming: high, balanced, low
+	relayed      bool                  // video goes through the TURN relay
+	started      time.Time             // when the current capture started
+	lastKF       time.Time             // last keyframe-driven restart
+	stalled      bool                  // screen is giving no picture; don't restart for keyframes
+	localCursor  bool                  // viewer draws the pointer itself
+	moveSeq      atomic.Int64          // newest mouse position applied (positions can arrive out of order)
+	stallStage   int                   // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
+	vIdx         int                   // virtual screen plugged in for this session (-1 none)
+	est          cc.BandwidthEstimator // GCC bandwidth estimate for this connection
+	rungs        []rung                // Auto quality ladder
+	rung         int                   // current step on it
+	lastSwitch   time.Time
+	holdUntil    time.Time // no stepping up before this
+	triedVirtual bool      // already tried adding one
+	lastFrame    time.Time // when the screen last produced a picture
 	once         sync.Once
 	pending      []webrtc.ICECandidateInit
 }
@@ -323,10 +336,39 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	// "disconnected" too early, and keep the path warm with frequent keepalives.
 	se := webrtc.SettingEngine{}
 	se.SetICETimeouts(10*time.Second, 40*time.Second, time.Second)
-	api := webrtc.NewAPI(webrtc.WithSettingEngine(se))
+	// Bandwidth estimation (GCC over transport-wide feedback from the browser)
+	// drives Auto quality. No pacer: packets go out immediately, for latency.
+	me := &webrtc.MediaEngine{}
+	if err := me.RegisterDefaultCodecs(); err != nil {
+		return err
+	}
+	reg := &interceptor.Registry{}
+	maxBps := parseKbps(a.cfg.Bitrate) * 1000 * 3 / 2
+	ccf, err := cc.NewInterceptor(func() (cc.BandwidthEstimator, error) {
+		return gcc.NewSendSideBWE(gcc.SendSideBWEInitialBitrate(4_000_000), gcc.SendSideBWEMinBitrate(400_000),
+			gcc.SendSideBWEMaxBitrate(max(maxBps, 2_000_000)), gcc.SendSideBWEPacer(gcc.NewNoOpPacer()))
+	})
+	if err != nil {
+		return err
+	}
+	estCh := make(chan cc.BandwidthEstimator, 1)
+	ccf.OnNewPeerConnection(func(_ string, est cc.BandwidthEstimator) { estCh <- est })
+	reg.Add(ccf)
+	if err := webrtc.ConfigureTWCCHeaderExtensionSender(me, reg); err != nil {
+		return err
+	}
+	if err := webrtc.RegisterDefaultInterceptors(me, reg); err != nil {
+		return err
+	}
+	api := webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithInterceptorRegistry(reg), webrtc.WithSettingEngine(se))
 	pc, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: a.ice})
 	if err != nil {
 		return err
+	}
+	var est cc.BandwidthEstimator
+	select {
+	case est = <-estCh:
+	default:
 	}
 	track, err := webrtc.NewTrackLocalStaticSample(
 		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264, ClockRate: 90000,
@@ -346,7 +388,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	a.screens = a.wakeAndListScreens()
 	a.sel = validSel(a.screens, a.sel)
 	a.input.SetTarget(target(a.screens, a.sel))
-	s := &Session{sid: sid, client: client, pc: pc, track: track, localCursor: localCursor, vIdx: -1}
+	s := &Session{sid: sid, client: client, pc: pc, track: track, localCursor: localCursor, vIdx: -1, est: est}
 	a.mu.Lock()
 	a.sess = s
 	a.mu.Unlock()
@@ -389,6 +431,8 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 					go a.switchScreen(s, ev.N)
 				case "quality":
 					go a.setQuality(s, ev.S, ev.C)
+				case "camera":
+					go a.setCamera(s, ev.C, ev.S)
 				case "mm":
 					// numbered positions on the unordered channel: skip any older than the last one
 					if n := int64(ev.N); n > 0 {
@@ -412,7 +456,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 			a.mu.Unlock()
 			info, _ := json.Marshal(map[string]any{"t": "hello", "name": a.cfg.Name, "os": runtime.GOOS, "version": version,
 				"encoder": a.cfg.Encoder, "screens": a.screens, "screen": a.sel,
-				"quality": s.quality, "level": s.level, "relayed": s.relayed})
+				"quality": s.quality, "level": s.level, "relayed": s.relayed, "label": a.qualityLabel(s), "camera": camOpts(a.cfg)})
 			_ = dc.SendText(string(info))
 		})
 	})
@@ -428,6 +472,12 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 				}
 				s.quality = "auto"
 				s.level = autoLevel(s)
+				s.rungs = ladder(a.cfg)
+				s.rung = startRung(s.rungs, s.relayed)
+				s.lastSwitch = time.Now()
+				if s.est != nil {
+					go a.runAdaptive(s, s.est)
+				}
 				keepAwake(true) // screens were woken when the viewer asked to connect
 				a.mu.Lock()
 				none := len(a.screens) == 0
@@ -655,12 +705,15 @@ func (a *Agent) restartCapture(s *Session) error {
 	old := s.cap
 	s.cap = nil
 	ss, sel, level := a.screens, a.sel, s.level
+	es := settingsFor(a.cfg, level)
+	if s.quality == "auto" && len(s.rungs) > 0 {
+		es = rungSettings(s.rungs[s.rung])
+	}
 	a.mu.Unlock()
 
 	if old != nil {
 		old.Stop()
 	}
-	es := settingsFor(a.cfg, level)
 	es.DrawMouse = !s.localCursor
 	capt, err := StartCapture(a.cfg, ss, sel, es, s.track)
 	a.mu.Lock()
@@ -913,29 +966,29 @@ func (a *Agent) setQuality(s *Session, q, autoStep string) {
 		a.mu.Unlock()
 		return
 	}
-	level := q
+	before := a.qualityLabel(s)
 	if q == "auto" {
-		level = autoLevel(s)
-		if validLevel(autoStep) {
-			level = autoStep
+		s.level = autoLevel(s)
+		if autoStep != "" && s.quality == "auto" && s.rung > 0 {
+			// the browser saw stalls or heavy loss: one step down, and stay down a while
+			s.rung--
+			s.lastSwitch, s.holdUntil = time.Now(), time.Now().Add(20*time.Second)
 		}
+	} else {
+		s.level = q
 	}
-	changed := level != s.level
-	s.quality, s.level = q, level
-	dc := s.dc
+	s.quality = q
+	after := a.qualityLabel(s)
 	a.mu.Unlock()
 
-	if changed {
+	if after != before {
 		if err := a.restartCapture(s); err != nil {
 			log.Printf("could not change quality: %v", err)
 			return
 		}
-		log.Printf("quality: %s (%s)", level, qualityLevels[level].describe)
+		log.Printf("quality: %s — %s", q, after)
 	}
-	if dc != nil {
-		msg, _ := json.Marshal(map[string]any{"t": "quality", "quality": q, "level": level, "relayed": s.relayed})
-		_ = dc.SendText(string(msg))
-	}
+	a.sendQuality(s)
 }
 
 // switchScreen restarts capture on another monitor (or all of them) mid-session.
@@ -1012,4 +1065,12 @@ func main() {
 		log.Println("TEST MODE: streaming a test pattern; input is logged, not applied")
 	}
 	a.run()
+}
+
+// camOpts is the camera's settings for the website (nil when not a camera).
+func camOpts(cfg Config) any {
+	if cfg.Camera == nil {
+		return nil
+	}
+	return cfg.Camera.opts()
 }

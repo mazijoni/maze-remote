@@ -407,6 +407,7 @@ async function startSession(host, card) {
   $("#keys-pop").hidden = true;
   $("#screens-pop").hidden = true;
   $("#quality-pop").hidden = true;
+  $("#cam-pop").hidden = true;
   setScreens([], 0);
   setQuality(store.get("quality", "auto"), "", false);
   sessEl.hidden = false;
@@ -437,6 +438,7 @@ async function endSession(reason) {
   if (!$("#keys-pop").hidden) closeEl($("#keys-pop"), "pop");
   if (!$("#screens-pop").hidden) closeEl($("#screens-pop"), "pop");
   if (!$("#quality-pop").hidden) closeEl($("#quality-pop"), "pop");
+  if (!$("#cam-pop").hidden) closeEl($("#cam-pop"), "pop");
 
   // the card may have been re-rendered: find it again by id
   const card = $(`.host-card[data-id="${CSS.escape(s.host.id)}"]`);
@@ -494,13 +496,21 @@ class RtcSession {
         // restore the screen you used last time on this PC
         const want = store.get("screen:" + this.host.id, null);
         if (want !== null && want !== m.screen && screenExists(want)) this.send({ t: "screen", n: want });
-        setQuality(m.quality || "auto", m.level || "high", !!m.relayed);
+        setQuality(m.quality || "auto", m.level || "high", !!m.relayed, m.label);
+        if (m.camera) setCameraOpts(m.camera);
         const pref = store.get("quality", "auto");
         if (pref !== "auto" && pref !== m.level) this.send({ t: "quality", s: pref });
       } else if (m.t === "quality") {
-        const prev = quality.level;
-        setQuality(m.quality, m.level, !!m.relayed);
-        if (prev !== m.level) toast("Quality: " + LEVEL_NAMES[m.level] + (m.quality === "auto" ? " (auto)" : ""), "ok");
+        const prevChoice = quality.choice;
+        setQuality(m.quality, m.level, !!m.relayed, m.label);
+        // manual choices get a toast; Auto adjusts quietly (see the quality menu / info)
+        if (m.quality !== "auto" || prevChoice !== "auto") toast("Quality: " + (m.quality === "auto" ? "Auto" : LEVEL_NAMES[m.level]), "ok");
+      } else if (m.t === "bwe") {
+        this.bwe = m;
+      } else if (m.t === "camera") {
+        setCameraOpts(m.opts);
+      } else if (m.t === "toast") {
+        toast(m.s, m.bad ? "bad" : "ok");
       } else if (m.t === "cursor") {
         if (this.localCursor) stage.style.cursor = m.c || "default";
       } else if (m.t === "status") {
@@ -590,7 +600,9 @@ class RtcSession {
       Encoder: this.info.encoder || "–", Codec: codec || "–", Screen: screens.list.length ? screenName(screens.current).replace(/^./, (c) => c.toUpperCase()) : "–", Resolution: w ? `${w}×${h}` : "–",
       Framerate: Math.round(fps) + " fps", Bitrate: mbps.toFixed(2) + " Mbps", Latency: ms,
       Route: remote === "relay" || local === "relay" ? "Relayed (TURN)" : local ? "Direct (peer-to-peer)" : "–",
-      Quality: quality.level ? LEVEL_NAMES[quality.level] + (quality.choice === "auto" ? " (auto)" : "") : "–",
+      Quality: quality.label ? (quality.choice === "auto" ? "Auto · " : LEVEL_NAMES[quality.level] + " · ") + quality.label : "–",
+      Network: this.bwe ? (this.bwe.congested ? "Busy — lowering quality" : "Good") + (this.bwe.loss > 0.01 ? " · " + Math.round(this.bwe.loss * 100) + "% loss" : "") : "–",
+      Sending: this.bwe ? (this.bwe.sent / 1000).toFixed(1) + " Mbps" : "–",
     });
   }
   // Auto quality: if frames stop getting through or loss is heavy, step down a level.
@@ -607,11 +619,9 @@ class RtcSession {
     const since = now - (this.lastFrameAt || this.connectedAt);
     const stalled = since > (this.lastFrameAt ? 6000 : 8000);
     if ((stalled || this.badLoss >= 4) && now - (this.lastStep || 0) > 9000) {
-      const next = { high: "balanced", balanced: "low" }[quality.level];
-      if (!next) return;
       this.lastStep = now; this.badLoss = 0; this.lastFrameAt = now;
       $("#stage-status").textContent = "Weak connection — lowering quality…";
-      this.send({ t: "quality", s: "auto", c: next });
+      this.send({ t: "quality", s: "auto", c: "down" }); // the agent steps one rung down
     }
   }
   stop() {
@@ -703,15 +713,53 @@ async function sendCombo(combo) {
   toast("Sent " + combo.replace(/Left|Key/g, "").replace(/\+/g, " + ").replace("Meta", "Win"));
 }
 
+// ---------------- camera settings ----------------
+const camOpts = { res: "720p", hdr: false, night: false, flip: false };
+function setCameraOpts(o) {
+  Object.assign(camOpts, o || {});
+  $$("#cam-pop [data-res]").forEach((b) => b.classList.toggle("current", b.dataset.res === camOpts.res));
+  $$("#cam-pop [data-cam]").forEach((b) => { $("input", b).checked = !!camOpts[b.dataset.cam]; });
+}
+$("#tb-cam").addEventListener("click", async (e) => {
+  e.stopPropagation();
+  const pop = $("#cam-pop");
+  for (const [p, b] of [["#keys-pop", "#tb-keys"], ["#screens-pop", "#tb-screens"], ["#quality-pop", "#tb-quality"]]) {
+    if (!$(p).hidden) { $(b).classList.remove("on"); closeEl($(p), "pop"); }
+  }
+  if (pop.hidden) { $("#tb-cam").classList.add("on"); await openEl(pop, "pop"); }
+  else { $("#tb-cam").classList.remove("on"); await closeEl(pop, "pop"); }
+});
+$("#cam-pop").addEventListener("click", (e) => {
+  if (!session) return;
+  const r = e.target.closest("[data-res]");
+  if (r && r.dataset.res !== camOpts.res) {
+    setCameraOpts({ res: r.dataset.res });
+    session.send({ t: "camera", c: "res", s: r.dataset.res });
+    toast("Camera: " + r.dataset.res + " — restarting the camera…");
+  }
+});
+$("#cam-pop").addEventListener("change", (e) => {
+  const row = e.target.closest("[data-cam]");
+  if (!row || !session) return;
+  const on = e.target.checked, key = row.dataset.cam;
+  camOpts[key] = on;
+  session.send({ t: "camera", c: key, s: on ? "1" : "0" });
+  toast({ hdr: "HDR", night: "Night mode", flip: "Flip" }[key] + (on ? " on" : " off") + " — restarting the camera…");
+});
+document.addEventListener("pointerdown", (e) => {
+  const pop = $("#cam-pop");
+  if (!pop.hidden && !e.target.closest("#cam-pop, #tb-cam")) { $("#tb-cam").classList.remove("on"); closeEl(pop, "pop"); }
+});
+
 // ---------------- quality ----------------
 const LEVEL_NAMES = { high: "High", balanced: "Balanced", low: "Low" };
 const quality = { choice: "auto", level: "", relayed: false };
 
-function setQuality(choice, level, relayed) {
-  Object.assign(quality, { choice, level, relayed });
+function setQuality(choice, level, relayed, label) {
+  Object.assign(quality, { choice, level, relayed, label: label || "" });
   $$("#quality-pop [data-q]").forEach((b) => b.classList.toggle("current", b.dataset.q === choice));
-  $("#q-auto-desc").textContent = choice === "auto" && level
-    ? `Now ${LEVEL_NAMES[level]}${relayed ? " · via relay" : ""}` : "Adjusts to your connection";
+  $("#q-auto-desc").textContent = choice === "auto" && label
+    ? `Now ${label}${relayed ? " · via relay" : ""}` : "Measures your connection and adapts";
 }
 
 $("#tb-quality").addEventListener("click", async (e) => {
@@ -818,7 +866,7 @@ function showToolbar() {
   $("#toolbar").classList.remove("tucked");
   clearTimeout(hideTimer);
   if (prefs.autoHide) hideTimer = setTimeout(() => {
-    if (!$("#keys-pop").hidden || !$("#screens-pop").hidden || !$("#quality-pop").hidden || $("#toolbar").matches(":hover")) return showToolbar();
+    if (!$("#keys-pop").hidden || !$("#screens-pop").hidden || !$("#quality-pop").hidden || !$("#cam-pop").hidden || $("#toolbar").matches(":hover")) return showToolbar();
     $("#toolbar").classList.add("tucked");
   }, 2600);
 }

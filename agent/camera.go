@@ -6,8 +6,13 @@ package main
 // "camera" section in the config file; the machine shows up as its own card.
 
 import (
+	"encoding/json"
 	"fmt"
+	"log"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"time"
 )
 
 type CameraConfig struct {
@@ -17,6 +22,8 @@ type CameraConfig struct {
 	Rotation int    `json:"rotation"` // 0 or 180
 	HFlip    bool   `json:"hflip"`
 	VFlip    bool   `json:"vflip"`
+	HDR      bool   `json:"hdr"`     // high dynamic range (bright windows + dark room)
+	Night    bool   `json:"night"`   // allow long exposures for dark rooms
 	Command  string `json:"command"` // capture program, default "rpicam-vid"
 }
 
@@ -60,6 +67,12 @@ func cameraCommands(cfg Config, es encodeSettings) (*exec.Cmd, *exec.Cmd) {
 	if c.HFlip {
 		camArgs = append(camArgs, "--hflip")
 	}
+	if c.HDR {
+		camArgs = append(camArgs, "--hdr", "auto")
+	}
+	if c.Night {
+		camArgs = append(camArgs, "--exposure", "long")
+	}
 	if c.VFlip {
 		camArgs = append(camArgs, "--vflip")
 	}
@@ -72,6 +85,150 @@ func cameraCommands(cfg Config, es encodeSettings) (*exec.Cmd, *exec.Cmd) {
 		"-vf", fitScale + ",format=yuv420p"}
 	ffArgs = append(ffArgs, encoderArgs(cfg, es, fmt.Sprint(es.GOP))...)
 	return cam, exec.Command(cfg.FFmpeg, ffArgs...)
+}
+
+// Camera settings changed from the website are saved next to the config, so
+// they survive restarts.
+func cameraSettingsPath() string {
+	if configPath == "" {
+		return "camera-settings.json"
+	}
+	return filepath.Join(filepath.Dir(configPath), "camera-settings.json")
+}
+
+type cameraOpts struct {
+	Res   string `json:"res"` // "720p" or "1080p"
+	HDR   bool   `json:"hdr"`
+	Night bool   `json:"night"`
+	Flip  bool   `json:"flip"` // rotated 180°
+}
+
+func (c *CameraConfig) opts() cameraOpts {
+	res := "720p"
+	if c.Height >= 1080 {
+		res = "1080p"
+	}
+	return cameraOpts{Res: res, HDR: c.HDR, Night: c.Night, Flip: c.Rotation == 180}
+}
+
+func (c *CameraConfig) apply(o cameraOpts) {
+	if o.Res == "1080p" {
+		c.Width, c.Height = 1920, 1080
+	} else {
+		c.Width, c.Height = 1280, 720
+	}
+	c.HDR, c.Night = o.HDR, o.Night
+	c.Rotation = 0
+	if o.Flip {
+		c.Rotation = 180
+	}
+	c.defaults()
+}
+
+func loadCameraSettings(c *CameraConfig) {
+	b, err := os.ReadFile(cameraSettingsPath())
+	if err != nil {
+		return
+	}
+	o := c.opts()
+	if json.Unmarshal(b, &o) == nil {
+		c.apply(o)
+	}
+}
+
+func saveCameraSettings(c *CameraConfig) {
+	b, _ := json.MarshalIndent(c.opts(), "", "  ")
+	if err := os.WriteFile(cameraSettingsPath(), b, 0o644); err != nil {
+		log.Printf("couldn't save camera settings: %v", err)
+	}
+}
+
+// setCamera changes one camera setting from the website and restarts capture.
+func (a *Agent) setCamera(s *Session, key, val string) {
+	if a.cfg.Camera == nil {
+		return
+	}
+	a.mu.Lock()
+	if a.sess != s {
+		a.mu.Unlock()
+		return
+	}
+	prev := a.cfg.Camera.opts()
+	o := prev
+	on := val == "1" || val == "true"
+	switch key {
+	case "res":
+		if val == "720p" || val == "1080p" {
+			o.Res = val
+		}
+	case "hdr":
+		o.HDR = on
+	case "night":
+		o.Night = on
+	case "flip":
+		o.Flip = on
+	default:
+		a.mu.Unlock()
+		return
+	}
+	a.cfg.Camera.apply(o)
+	saveCameraSettings(a.cfg.Camera)
+	a.screens = cameraScreens(a.cfg)
+	s.rungs = ladder(a.cfg)
+	s.rung = min(s.rung, len(s.rungs)-1)
+	dc := s.dc
+	a.mu.Unlock()
+	log.Printf("camera: %s=%s", key, val)
+	ok := a.restartCapture(s) == nil && a.cameraWorks(s)
+	if !ok {
+		// this camera doesn't support that setting: put it back
+		log.Printf("camera didn't start with %s=%s — reverting", key, val)
+		a.mu.Lock()
+		a.cfg.Camera.apply(prev)
+		saveCameraSettings(a.cfg.Camera)
+		a.screens = cameraScreens(a.cfg)
+		s.rungs = ladder(a.cfg)
+		s.rung = min(s.rung, len(s.rungs)-1)
+		s.stallStage, s.stalled, s.lastFrame = 0, false, time.Now()
+		a.mu.Unlock()
+		a.restartCapture(s)
+		names := map[string]string{"res": "1080p", "hdr": "HDR", "night": "Night mode", "flip": "Flip"}
+		a.status(dc, "")
+		if dc != nil {
+			b, _ := json.Marshal(map[string]any{"t": "toast", "s": "Your camera doesn't support " + names[key] + " — turned it back off", "bad": true})
+			_ = dc.SendText(string(b))
+		}
+	}
+	if dc != nil {
+		b, _ := json.Marshal(map[string]any{"t": "camera", "opts": a.cfg.Camera.opts()})
+		_ = dc.SendText(string(b))
+	}
+	a.sendQuality(s)
+}
+
+// cameraWorks waits up to ~6s for the restarted camera to produce a picture.
+func (a *Agent) cameraWorks(s *Session) bool {
+	deadline := time.Now().Add(6 * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(300 * time.Millisecond)
+		a.mu.Lock()
+		c := s.cap
+		a.mu.Unlock()
+		if c == nil {
+			continue
+		}
+		if c.Frames() > 0 {
+			return true
+		}
+		select {
+		case <-c.Done():
+			if c.Crashed() {
+				return false
+			}
+		default:
+		}
+	}
+	return false
 }
 
 // noInput is the input handler for a camera: there's nothing to control.

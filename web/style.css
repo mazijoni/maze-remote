@@ -462,6 +462,17 @@ kbd { color: var(--ink-2); background: var(--paper-4); border: 1px solid var(--l
 
 /* ── CAMERA SESSIONS & SNAPSHOT ───────────────────────── */
 .session.is-camera #tb-keys, .session.is-camera #tb-paste { display: none; }
+.session:not(.is-camera) #tb-cam { display: none; }
+.cam-pop { min-width: 280px; padding: 4px 4px 6px; }
+.cam-pop .seg { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 2px 6px 8px; }
+.cam-pop .seg button { justify-content: center; border: 1px solid var(--line-2); font-family: var(--mono); font-size: 11.5px; letter-spacing: .08em; }
+.cam-pop .seg button.current { color: var(--accent); border-color: var(--accent); background: var(--accent-dim); }
+.cam-pop .settings-row { padding: 9px 10px; border-bottom: 1px solid var(--line); }
+.cam-pop .settings-row:last-of-type { border-bottom: 0; }
+.cam-pop .settings-row > span { display: flex; flex-direction: column; line-height: 1.35; }
+.cam-pop .settings-row b { font-weight: 500; color: var(--ink); font-size: 12.5px; }
+.cam-pop .settings-row small { font-size: 11px; color: var(--ink-dim); }
+.cam-note { color: var(--ink-dim) !important; border-top: 1px solid var(--line); margin-top: 2px; padding-top: 8px !important; }
 .session.is-camera .stage { cursor: default !important; }
 .snap-flash { position: absolute; inset: 0; background: #fff; pointer-events: none; z-index: 5; }
 

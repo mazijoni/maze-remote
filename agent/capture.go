@@ -26,6 +26,7 @@ type Capture struct {
 	stopping atomic.Bool  // set when we stop it on purpose
 	errMsg   string       // ffmpeg's error output if it exited by itself
 	frames   atomic.Int64 // frames sent so far
+	bytes    atomic.Int64 // video bytes sent so far
 	started  time.Time
 	cmd      *exec.Cmd
 	stop     sync.Once
@@ -192,7 +193,7 @@ func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *we
 
 	go func() {
 		defer close(c.done)
-		err := pump(bufio.NewReaderSize(stdout, 1<<20), track, &c.frames)
+		err := pump(bufio.NewReaderSize(stdout, 1<<20), track, &c.frames, &c.bytes)
 		_ = cmd.Wait()
 		if src != nil {
 			// the camera can only be opened by one program at a time: make sure it's
@@ -216,7 +217,7 @@ func StartCapture(cfg Config, ss []Screen, sel int, es encodeSettings, track *we
 
 // pump groups NAL units into frames: a new frame starts at a VCL slice whose
 // first_mb_in_slice == 0 (first bit of the slice header is 1), or at an AUD.
-func pump(r io.Reader, track *webrtc.TrackLocalStaticSample, count *atomic.Int64) error {
+func pump(r io.Reader, track *webrtc.TrackLocalStaticSample, count, nbytes *atomic.Int64) error {
 	reader, err := h264reader.NewReader(r)
 	if err != nil {
 		return err
@@ -238,6 +239,7 @@ func pump(r io.Reader, track *webrtc.TrackLocalStaticSample, count *atomic.Int64
 		}
 		err := track.WriteSample(media.Sample{Data: frame, Duration: dur})
 		count.Add(1)
+		nbytes.Add(int64(len(frame)))
 		frame = nil
 		hasVCL = false
 		return err
@@ -272,6 +274,7 @@ func pump(r io.Reader, track *webrtc.TrackLocalStaticSample, count *atomic.Int64
 
 // Frames is how many frames have been sent; ErrText is ffmpeg's error output.
 func (c *Capture) Frames() int64   { return c.frames.Load() }
+func (c *Capture) Bytes() int64    { return c.bytes.Load() }
 func (c *Capture) ErrText() string { return c.errMsg }
 
 // Done is closed when ffmpeg exits, whether stopped or crashed.
