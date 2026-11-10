@@ -21,8 +21,9 @@ sudo apt-get install -y -qq ffmpeg xdotool >/dev/null
 
 echo "-> Downloading the agent"
 mkdir -p "$DIR"
-curl -fsSL "$URL" -o "$DIR/maze-remote-agent"
-chmod +x "$DIR/maze-remote-agent"
+curl -fsSL "$URL" -o "$DIR/maze-remote-agent.new"
+chmod +x "$DIR/maze-remote-agent.new"
+mv -f "$DIR/maze-remote-agent.new" "$DIR/maze-remote-agent"   # works even while it's running
 
 if [ ! -f "$DIR/maze-remote.json" ]; then
   SECRET=""

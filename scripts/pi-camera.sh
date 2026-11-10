@@ -37,12 +37,13 @@ if ! echo "$LIST" | grep -qE '^\s*0 :'; then
 fi
 echo "$LIST" | grep -E '^\s*[0-9]+ :' | head -3
 
-echo "-> Downloading the agent"
+echo "-> Downloading the newest agent"
 mkdir -p "$DIR"
-if [ ! -x "$DIR/maze-remote-agent" ]; then
-  curl -fsSL "$URL" -o "$DIR/maze-remote-agent"
-  chmod +x "$DIR/maze-remote-agent"
-fi
+# always fetch the newest one (older agents don't know camera mode); download
+# next to it and rename, since a running program can't be overwritten in place
+curl -fsSL "$URL" -o "$DIR/maze-remote-agent.new"
+chmod +x "$DIR/maze-remote-agent.new"
+mv -f "$DIR/maze-remote-agent.new" "$DIR/maze-remote-agent"
 
 if [ ! -f "$CONF" ]; then
   SECRET=""
