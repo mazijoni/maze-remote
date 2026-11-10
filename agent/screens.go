@@ -81,8 +81,5 @@ func getScreens(cfg Config) []Screen {
 		}
 	}
 	ss := listScreens(cfg.FFmpeg)
-	if len(ss) == 0 {
-		ss = []Screen{{Index: 0, Name: "Screen", W: 1920, H: 1080, Primary: true}}
-	}
-	return ss
+	return ss // may be empty while monitors are asleep/unplugged
 }

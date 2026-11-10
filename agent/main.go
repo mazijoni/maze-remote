@@ -138,24 +138,26 @@ type Agent struct {
 }
 
 type Session struct {
-	sid         string
-	client      string
-	pc          *webrtc.PeerConnection
-	track       *webrtc.TrackLocalStaticSample
-	cap         *Capture
-	dc          *webrtc.DataChannel
-	quality     string       // what the viewer chose: auto, high, balanced, low
-	level       string       // what is actually streaming: high, balanced, low
-	relayed     bool         // video goes through the TURN relay
-	started     time.Time    // when the current capture started
-	lastKF      time.Time    // last keyframe-driven restart
-	stalled     bool         // screen is giving no picture; don't restart for keyframes
-	localCursor bool         // viewer draws the pointer itself
-	moveSeq     atomic.Int64 // newest mouse position applied (positions can arrive out of order)
-	stallStage  int          // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
-	lastFrame   time.Time    // when the screen last produced a picture
-	once        sync.Once
-	pending     []webrtc.ICECandidateInit
+	sid          string
+	client       string
+	pc           *webrtc.PeerConnection
+	track        *webrtc.TrackLocalStaticSample
+	cap          *Capture
+	dc           *webrtc.DataChannel
+	quality      string       // what the viewer chose: auto, high, balanced, low
+	level        string       // what is actually streaming: high, balanced, low
+	relayed      bool         // video goes through the TURN relay
+	started      time.Time    // when the current capture started
+	lastKF       time.Time    // last keyframe-driven restart
+	stalled      bool         // screen is giving no picture; don't restart for keyframes
+	localCursor  bool         // viewer draws the pointer itself
+	moveSeq      atomic.Int64 // newest mouse position applied (positions can arrive out of order)
+	stallStage   int          // 0 fine, 1 trying to wake, 2 told the viewer what's wrong
+	vIdx         int          // virtual screen plugged in for this session (-1 none)
+	triedVirtual bool         // already tried adding one
+	lastFrame    time.Time    // when the screen last produced a picture
+	once         sync.Once
+	pending      []webrtc.ICECandidateInit
 }
 
 func (a *Agent) send(m wsMsg) {
@@ -323,7 +325,7 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 	a.screens = a.wakeAndListScreens()
 	a.sel = validSel(a.screens, a.sel)
 	a.input.SetTarget(target(a.screens, a.sel))
-	s := &Session{sid: sid, client: client, pc: pc, track: track, localCursor: localCursor}
+	s := &Session{sid: sid, client: client, pc: pc, track: track, localCursor: localCursor, vIdx: -1}
 	a.mu.Lock()
 	a.sess = s
 	a.mu.Unlock()
@@ -406,6 +408,13 @@ func (a *Agent) startSession(client, sid string, offer webrtc.SessionDescription
 				s.quality = "auto"
 				s.level = autoLevel(s)
 				keepAwake(true) // screens were woken when the viewer asked to connect
+				a.mu.Lock()
+				none := len(a.screens) == 0
+				a.mu.Unlock()
+				if none {
+					log.Printf("no monitors found (asleep or unplugged)")
+					a.ensureVirtualScreen(s)
+				}
 				if err := a.restartCapture(s); err != nil {
 					log.Printf("capture failed: %v", err)
 					a.send(wsMsg{Type: "bye", To: s.client, Sid: s.sid})
@@ -538,6 +547,73 @@ func byteSize(n uint64) string {
 	return fmt.Sprintf("%d B", n)
 }
 
+// ensureVirtualScreen plugs in a virtual screen when the real monitors give
+// nothing to capture (asleep, or treated as unplugged), like RustDesk, Parsec
+// and Sunshine do. Needs the Parsec Virtual Display driver. Tried once per session.
+func (a *Agent) ensureVirtualScreen(s *Session) bool {
+	a.mu.Lock()
+	if a.sess != s || s.triedVirtual || s.vIdx >= 0 {
+		a.mu.Unlock()
+		return false
+	}
+	s.triedVirtual = true
+	old := map[int]bool{}
+	for _, sc := range a.screens {
+		old[sc.Index] = true
+	}
+	dc := s.dc
+	a.mu.Unlock()
+
+	if !vscreenAvailable() {
+		log.Printf("tip: install the virtual screen driver so the PC can be shown while its monitors sleep (see README)")
+		return false
+	}
+	a.status(dc, "Monitors are asleep — adding a virtual screen…")
+	idx, err := vscreenAdd()
+	if err != nil {
+		log.Printf("virtual screen: %v", err)
+		return false
+	}
+	var ss []Screen
+	pick := -1
+	for i := 0; i < 24 && pick < 0; i++ { // Windows needs a moment to bring it up
+		time.Sleep(250 * time.Millisecond)
+		ss = getScreens(a.cfg)
+		for _, sc := range ss {
+			if !old[sc.Index] {
+				pick = sc.Index
+			}
+		}
+	}
+	if pick < 0 {
+		log.Printf("the virtual screen didn't show up — removing it")
+		vscreenRemove(idx)
+		return false
+	}
+	a.mu.Lock()
+	if a.sess != s {
+		a.mu.Unlock()
+		vscreenRemove(idx)
+		return false
+	}
+	s.vIdx = idx
+	for i := range ss {
+		if ss[i].Index == pick {
+			ss[i].Name = "Virtual screen"
+		}
+	}
+	a.screens, a.sel = ss, pick
+	s.lastFrame = time.Now() // give the new screen time to produce a picture
+	a.mu.Unlock()
+	a.input.SetTarget(target(ss, pick))
+	log.Printf("▶ added a virtual screen (%s) — showing it while the monitors are off", screenLabel(ss, pick))
+	if dc != nil {
+		msg, _ := json.Marshal(map[string]any{"t": "screen", "screen": pick, "screens": ss})
+		_ = dc.SendText(string(msg))
+	}
+	return true
+}
+
 func autoLevel(s *Session) string {
 	if s.relayed {
 		return "balanced"
@@ -640,6 +716,11 @@ func (a *Agent) watchFrames(s *Session, capt *Capture) {
 			a.refreshScreens(s)
 			go a.restartCapture(s) // a fresh capture after waking; a new watcher takes over
 			return
+		case stage == 1 && quiet > 8*time.Second && !s.triedVirtual:
+			if a.ensureVirtualScreen(s) {
+				go a.restartCapture(s)
+				return
+			}
 		case stage == 1 && quiet > 12*time.Second:
 			a.setStall(s, 2)
 			msg := screenProblem("")
@@ -673,7 +754,11 @@ func screenProblem(ffmpegErr string) string {
 		}
 		return "Screen capture failed on the PC: " + e
 	}
-	return "The PC's screen isn't giving a picture (monitors off or disconnected?). Try again in a moment."
+	msg := "The PC's screen isn't giving a picture (monitors off or disconnected?). Try again in a moment."
+	if runtime.GOOS == "windows" && !vscreenAvailable() {
+		msg += " Tip: install the virtual screen driver on the PC so it can be shown while its monitors sleep."
+	}
+	return msg
 }
 
 // syncCursor tells the viewer which pointer shape the PC shows (arrow, text
@@ -724,6 +809,11 @@ func (a *Agent) watch(s *Session, capt *Capture) {
 		}
 		if attempt == 1 {
 			log.Printf("screen capture stopped — waking the displays and retrying")
+		}
+		if attempt == 2 && a.ensureVirtualScreen(s) {
+			if err := a.restartCapture(s); err == nil {
+				return
+			}
 		}
 		if attempt >= 3 {
 			msg := screenProblem(capt.ErrText())
@@ -875,6 +965,10 @@ func (a *Agent) closeSession(reason string) {
 	}
 	s.pc.Close()
 	a.input.ReleaseAll()
+	if s.vIdx >= 0 {
+		vscreenRemove(s.vIdx)
+		log.Printf("removed the virtual screen")
+	}
 	log.Printf("■ session %s closed: %s", s.sid, reason)
 }
 
@@ -885,6 +979,9 @@ func main() {
 	a := &Agent{cfg: cfg, input: newInjector(cfg), sel: cfg.Monitor}
 	a.screens = getScreens(cfg)
 	a.maxScreens = len(a.screens)
+	if runtime.GOOS == "windows" && !cfg.Test && !vscreenAvailable() {
+		log.Printf("virtual screen driver not installed — the PC can't be shown while its monitors sleep (see README)")
+	}
 	for _, sc := range a.screens {
 		log.Printf("found %s: %dx%d at (%d,%d), rotation %d°", sc.Name, sc.W, sc.H, sc.X, sc.Y, sc.Rotation)
 	}

@@ -74,6 +74,15 @@ Open `http://<pi-ip>:8080` and sign in with `MR_PASSWORD`.
 | `amf` | AMD | |
 | `qsv` | Intel | |
 
+**Monitors asleep — virtual screen (recommended).** Many monitors (especially over DisplayPort) count as *unplugged* while they sleep, leaving Windows nothing to capture. Like RustDesk, Parsec and Sunshine, the agent can then plug in a **virtual screen** that never sleeps and show that instead. It uses the free, signed [Parsec Virtual Display driver](https://github.com/nomi-san/parsec-vdd) — install it once (PowerShell, approve the admin prompt):
+
+```powershell
+iwr https://builds.parsec.app/vdd/parsec-vdd-0.41.0.0.exe -OutFile $env:TEMP\parsec-vdd.exe
+Start-Process $env:TEMP\parsec-vdd.exe -ArgumentList '/S' -Verb RunAs -Wait
+```
+
+Restart the agent; it should log `virtual screen driver found`. When monitors give no picture it adds a virtual screen for the session (you'll see *Virtual screen* in the screen menu) and removes it when you disconnect. Windows moves open windows onto it when the real monitors drop out; if they stay on the sleeping monitors, press **Win + Shift + ←/→** to move a window over.
+
 **Sleeping screens:** when you connect, the agent wakes sleeping monitors and keeps them (and the PC) awake until you disconnect; if capture drops because a display slept, it recovers by itself. Two Windows settings still matter:
 - *Settings → System → Power → Screen and sleep*: let the **screen** turn off, but set **"put my device to sleep"** to **Never** — a sleeping PC is offline.
 - *Settings → Accounts → Sign-in options → "If you've been away, when should Windows require you to sign in again?"* → **Never**. Windows doesn't let normal programs capture the lock screen.
