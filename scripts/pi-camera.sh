@@ -89,4 +89,5 @@ sleep 3
 journalctl -u maze-remote-camera -n 4 --no-pager -o cat || true
 echo
 echo "Done. \"Pi Camera\" should now be on the website."
+echo "Motion clips are saved to ~/maze-remote-clips — see Camera recordings in the website's sidebar."
 echo "Picture upside down? Set \"rotation\": 180 in $CONF, then: sudo systemctl restart maze-remote-camera"

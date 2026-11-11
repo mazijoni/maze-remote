@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { WebSocketServer } from "ws";
 import { createStats } from "./stats.js";
+import { handleClips } from "./clips.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -124,7 +125,7 @@ const MIME = {
 
 function cors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Headers", "content-type");
+  res.setHeader("Access-Control-Allow-Headers", "content-type, authorization, range");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
 }
 
@@ -152,6 +153,14 @@ const server = http.createServer((req, res) => {
       json(res, 200, { token: issueToken(), ice: iceServers() });
     });
     return;
+  }
+
+  // camera motion clips (list, play, delete, settings)
+  if (url.pathname.startsWith("/api/clips")) {
+    const auth = (req.headers.authorization || "").replace(/^Bearer /, "") || url.searchParams.get("t") || "";
+    if (!validToken(auth)) return json(res, 401, { error: "Sign in again." });
+    cors(res);
+    return handleClips(req, res, url);
   }
 
   if (url.pathname === "/api/health") return json(res, 200, { ok: true, hosts: hosts.size });
