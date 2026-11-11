@@ -25,7 +25,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-var version = "0.4.1"
+var version = "0.5.0"
 
 // configPath is the config file in use (camera settings are saved beside it).
 var configPath string
@@ -1052,6 +1052,11 @@ func main() {
 	platformInit()
 	a := &Agent{cfg: cfg, input: newInjector(cfg), sel: cfg.Monitor}
 	go cleanupOld()
+	if cfg.Camera != nil {
+		ffmpegPath = func() string { return cfg.FFmpeg }
+		camera = newCamHub(*cfg.Camera)
+		startRecorder(cfg.Camera)
+	}
 	a.screens = getScreens(cfg)
 	a.maxScreens = len(a.screens)
 	if runtime.GOOS == "windows" && !cfg.Test && !vscreenAvailable() {

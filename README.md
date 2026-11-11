@@ -113,6 +113,21 @@ bash scripts/pi-camera.sh
 
 Settings live in `~/maze-remote-agent/maze-remote-camera.json` (`width`, `height`, `fps`, `rotation: 180`, `hflip`, `vflip`); apply changes with `sudo systemctl restart maze-remote-camera`. The 📷 toolbar button saves a snapshot of any session as a PNG.
 
+### Motion recording (camera timeline)
+
+The camera agent watches the picture all the time and saves a clip whenever something moves or the scene changes a lot (a light switched on). Each clip starts 2 seconds before the motion and runs until 5 seconds after it stops; long events are split into 5-minute clips.
+
+Open **Camera recordings** (the video library button in the sidebar) to see the day as a 24-hour timeline with a mark for every clip, play them, step through them, download or delete them, and jump between days. The sliders button there turns recording on/off and sets the **sensitivity** (low/medium/high) and how many **days** to keep clips. The oldest clips are also deleted when the Pi's disk drops under 10% free.
+
+It works out of the box after updating the server and the camera agent:
+
+```bash
+cd ~/maze-remote && git pull && sudo systemctl restart maze-remote
+bash scripts/pi-camera.sh   # downloads the newest camera agent
+```
+
+Clips are saved in `~/maze-remote-clips/<date>/` as MP4 (H.264, 15 fps) with a JPEG thumbnail. To use another folder (e.g. a USB drive), set `"clips": "/media/usb/clips"` in the `camera` section of `~/maze-remote-agent/maze-remote-camera.json` **and** `MR_CLIPS_DIR=/media/usb/clips` in `server/.env`. Set `"clips": "off"` to disable recording completely. The live view and recording share the camera, so both work at the same time.
+
 ### Server stats
 
 The dashboard shows a live strip with the Pi's CPU, temperature, memory and disk above your machines. Click it (or the ♥ button in the sidebar) for the full view: per-core CPU, load, clock speed, fan speed, network traffic with graphs, IP address, uptime, and warnings when the Pi is throttled or short on power (from `vcgencmd get_throttled`). The server reads everything from `/proc` and `/sys` every 2 seconds and only sends it to signed-in browsers; nothing to set up besides updating the server.

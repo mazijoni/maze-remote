@@ -26,6 +26,10 @@ type CameraConfig struct {
 	Night    bool   `json:"night"`   // allow long exposures for dark rooms
 	Focus    string `json:"focus"`   // "x,y" (0..1 of the picture) to focus on, "" = whole picture
 	Command  string `json:"command"` // capture program, default "rpicam-vid"
+	// Motion recording: where clips are saved ("off" = don't record), and the
+	// frame rate they're saved at.
+	Clips     string `json:"clips"`     // default ~/maze-remote-clips
+	RecordFPS int    `json:"recordFps"` // default 15
 }
 
 func (c *CameraConfig) defaults() {
@@ -44,6 +48,14 @@ func (c *CameraConfig) defaults() {
 	if c.Command == "" {
 		c.Command = "rpicam-vid"
 	}
+	if c.Clips == "" {
+		home, _ := os.UserHomeDir()
+		c.Clips = filepath.Join(home, "maze-remote-clips")
+	}
+	if c.RecordFPS <= 0 {
+		c.RecordFPS = 15
+	}
+	c.RecordFPS = min(c.RecordFPS, c.FPS)
 }
 
 func cameraScreens(cfg Config) []Screen {
@@ -51,45 +63,20 @@ func cameraScreens(cfg Config) []Screen {
 	return []Screen{{Index: 0, Name: "Camera", W: c.Width, H: c.Height, Primary: true}}
 }
 
-// cameraCommands builds the capture → encode pipeline.
-func cameraCommands(cfg Config, es encodeSettings) (*exec.Cmd, *exec.Cmd) {
+// cameraEncoder builds the live-view encoder: raw frames from the shared
+// camera go in on stdin, low-latency H.264 comes out.
+func cameraEncoder(cfg Config, es encodeSettings, w, h int) *exec.Cmd {
 	c := cfg.Camera
-	fps := min(c.FPS, es.FPS)
-	camArgs := []string{
-		"-t", "0", "-n", "--flush",
-		"--codec", "yuv420",
-		"--width", fmt.Sprint(c.Width), "--height", fmt.Sprint(c.Height),
-		"--framerate", fmt.Sprint(fps),
-		"-o", "-",
+	vf := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", es.MaxW, es.MaxH)
+	if es.FPS < c.FPS {
+		vf = fmt.Sprintf("fps=%d,", es.FPS) + vf
 	}
-	if c.Rotation == 180 {
-		camArgs = append(camArgs, "--rotation", "180")
-	}
-	if c.HFlip {
-		camArgs = append(camArgs, "--hflip")
-	}
-	if c.HDR {
-		camArgs = append(camArgs, "--hdr", "auto")
-	}
-	if c.Night {
-		camArgs = append(camArgs, "--exposure", "long")
-	}
-	if c.VFlip {
-		camArgs = append(camArgs, "--vflip")
-	}
-	if win := c.focusWindow(); win != "" {
-		// keep focusing continuously, but only on that spot
-		camArgs = append(camArgs, "--autofocus-mode", "continuous", "--autofocus-window", win)
-	}
-	cam := exec.Command(c.Command, camArgs...)
-
-	fitScale := fmt.Sprintf("scale=w='min(%d,iw)':h='min(%d,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2", es.MaxW, es.MaxH)
 	ffArgs := []string{"-hide_banner", "-loglevel", "error", "-fflags", "nobuffer", "-flags", "low_delay",
-		"-f", "rawvideo", "-pix_fmt", "yuv420p", "-video_size", fmt.Sprintf("%dx%d", c.Width, c.Height),
-		"-framerate", fmt.Sprint(fps), "-i", "pipe:0",
-		"-vf", fitScale + ",format=yuv420p"}
+		"-f", "rawvideo", "-pix_fmt", "yuv420p", "-video_size", fmt.Sprintf("%dx%d", w, h),
+		"-framerate", fmt.Sprint(c.FPS), "-i", "pipe:0",
+		"-vf", vf + ",format=yuv420p"}
 	ffArgs = append(ffArgs, encoderArgs(cfg, es, fmt.Sprint(es.GOP))...)
-	return cam, exec.Command(cfg.FFmpeg, ffArgs...)
+	return exec.Command(cfg.FFmpeg, ffArgs...)
 }
 
 // focusWindow turns the tapped point into rpicam's autofocus window
@@ -217,9 +204,12 @@ func (a *Agent) setCamera(s *Session, key, val string) {
 	s.rungs = ladder(a.cfg)
 	s.rung = min(s.rung, len(s.rungs)-1)
 	dc := s.dc
+	newCfg := *a.cfg.Camera
 	a.mu.Unlock()
 	log.Printf("camera: %s=%s", key, val)
-	ok := a.restartCapture(s) == nil && a.cameraWorks(s)
+	since := time.Now()
+	camera.Restart(newCfg)
+	ok := a.restartCapture(s) == nil && cameraWorks(since)
 	if !ok {
 		// this camera doesn't support that setting: put it back
 		log.Printf("camera didn't start with %s=%s — reverting", key, val)
@@ -230,7 +220,9 @@ func (a *Agent) setCamera(s *Session, key, val string) {
 		s.rungs = ladder(a.cfg)
 		s.rung = min(s.rung, len(s.rungs)-1)
 		s.stallStage, s.stalled, s.lastFrame = 0, false, time.Now()
+		oldCfg := *a.cfg.Camera
 		a.mu.Unlock()
+		camera.Restart(oldCfg)
 		a.restartCapture(s)
 		names := map[string]string{"res": "1080p", "hdr": "HDR", "night": "Night mode", "flip": "Flip", "focus": "tap to focus"}
 		a.status(dc, "")
@@ -251,25 +243,12 @@ func (a *Agent) setCamera(s *Session, key, val string) {
 }
 
 // cameraWorks waits up to ~6s for the restarted camera to produce a picture.
-func (a *Agent) cameraWorks(s *Session) bool {
+func cameraWorks(since time.Time) bool {
 	deadline := time.Now().Add(6 * time.Second)
 	for time.Now().Before(deadline) {
-		time.Sleep(300 * time.Millisecond)
-		a.mu.Lock()
-		c := s.cap
-		a.mu.Unlock()
-		if c == nil {
-			continue
-		}
-		if c.Frames() > 0 {
-			return true
-		}
-		select {
-		case <-c.Done():
-			if c.Crashed() {
-				return false
-			}
-		default:
+		time.Sleep(200 * time.Millisecond)
+		if works, ok := camera.WorksSince(since); ok {
+			return works
 		}
 	}
 	return false

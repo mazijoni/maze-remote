@@ -109,6 +109,7 @@ async function closeModal(keepScrim = false) {
   const root = $("#modal-root");
   const el = openModalEl;
   openModalEl = null;
+  if (el.id === "modal-clips") $("#cl-video").pause();
   if (!keepScrim) animate($(".scrim", root), [{ opacity: 1 }, { opacity: 0 }], { duration: 160, easing: "ease-in" });
   await closeEl(el, "modal");
   if (!keepScrim && !openModalEl) root.hidden = true;
@@ -193,6 +194,7 @@ async function enterDashboard() {
     renderHosts(null, true);
     connectSignaling();
   }
+  probeClips();
 }
 
 function logout() {
@@ -202,6 +204,9 @@ function logout() {
   Object.assign(state, { token: "", demo: false, hosts: [] });
   stopDemoStats();
   hideStats();
+  clearTimeout(clipsUI.probeTimer);
+  $("#btn-clips").hidden = true;
+  clipsUI.demo = null; clipsUI.data = null; clipsUI.day = null;
   showView("view-login");
 }
 $("#btn-logout").addEventListener("click", logout);
@@ -533,6 +538,294 @@ function hideStats() {
 
 function sendSignal(msg) {
   if (state.ws && state.ws.readyState === 1) state.ws.send(JSON.stringify(msg));
+}
+
+// ---------------- camera recordings ----------------
+// The Pi camera saves a clip whenever it sees motion; the server lists them
+// per day. The timeline shows the day's 24 hours with a mark per clip.
+const clipsUI = { day: null, data: null, sel: null, timer: null, probeTimer: null, demo: null };
+const pad2 = (n) => String(n).padStart(2, "0");
+const localDay = (d = new Date()) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+const clipTime = (ms) => new Date(ms).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+function fmtDur(s) {
+  s = Math.round(s);
+  return s < 60 ? s + " s" : Math.floor(s / 60) + " min " + pad2(s % 60) + " s";
+}
+function dayLabel(day) {
+  const today = localDay(), y = new Date(); y.setDate(y.getDate() - 1);
+  if (day === today) return "Today";
+  if (day === localDay(y)) return "Yesterday";
+  const [Y, M, D] = day.split("-").map(Number);
+  return new Date(Y, M - 1, D).toLocaleDateString([], { weekday: "short", day: "numeric", month: "short" });
+}
+
+async function clipsApi(path, body) {
+  if (state.demo) return demoClipsApi(path, body);
+  const r = await fetch(state.server + path, {
+    method: body ? "POST" : "GET",
+    headers: { authorization: "Bearer " + state.token, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (r.status === 401) { logout(); throw new Error("Signed out"); }
+  if (!r.ok) throw new Error("HTTP " + r.status);
+  return r.json();
+}
+const mediaURL = (id, ext) => state.demo ? "" : `${state.server}/api/clips/media/${id}.${ext}?t=${encodeURIComponent(state.token)}`;
+
+// show the sidebar button if this server knows about clips, and a red dot while recording
+async function probeClips() {
+  clearTimeout(clipsUI.probeTimer);
+  if (!state.token && !state.demo) return;
+  try {
+    const j = await clipsApi("/api/clips");
+    $("#btn-clips").hidden = false;
+    $("#btn-clips .rail-rec").hidden = j.state !== "recording";
+  } catch { $("#btn-clips").hidden = true; }
+  if (!state.demo) clipsUI.probeTimer = setTimeout(probeClips, 20000);
+}
+
+async function openClips() {
+  clipsUI.day = clipsUI.day || localDay();
+  clipsUI.sel = null;
+  $("#cl-player").hidden = true;
+  openModal("modal-clips");
+  await loadClips();
+  clearInterval(clipsUI.timer);
+  clipsUI.timer = setInterval(() => { if ($("#modal-clips").hidden) { clearInterval(clipsUI.timer); $("#cl-video").pause(); } else loadClips(true); }, 10000);
+}
+$("#btn-clips").addEventListener("click", openClips);
+
+async function loadClips(quiet = false) {
+  let j;
+  try { j = await clipsApi("/api/clips?day=" + clipsUI.day); }
+  catch (e) { if (!quiet) toast("Couldn't load recordings: " + e.message, "bad"); return; }
+  const before = clipsUI.data && clipsUI.data.day === j.day ? clipsUI.data.clips.length : -1;
+  clipsUI.data = j;
+  renderClipsState(j);
+  if (quiet && before === j.clips.length) return; // nothing new: leave the page alone
+  renderTimeline(j);
+  renderClipGrid(j);
+  if (!clipsUI.sel && j.clips.length && !quiet) selectClip(j.clips[j.clips.length - 1], false);
+  else if (clipsUI.sel) markSelected();
+}
+
+function renderClipsState(j) {
+  const labels = { watching: "Watching for motion", recording: "Recording now", off: "Recording off", offline: "Camera offline", none: "Not set up" };
+  const st = $("#cl-state");
+  st.textContent = labels[j.state] || j.state;
+  st.dataset.state = j.state;
+  $("#btn-clips .rail-rec").hidden = j.state !== "recording";
+  const note = $("#cl-note");
+  note.hidden = !["none", "offline"].includes(j.state);
+  if (j.state === "none") note.innerHTML = 'The camera hasn\'t saved anything yet. Update the camera agent on the Pi: <code>bash ~/maze-remote/scripts/pi-camera.sh</code>';
+  if (j.state === "offline") note.textContent = "The camera agent isn't running, so nothing is being recorded. On the Pi: sudo systemctl restart maze-remote-camera";
+  const s = j.settings || {};
+  $("#cl-enabled").checked = !!s.enabled;
+  $$("#cl-sens button").forEach((b) => b.classList.toggle("current", b.dataset.v === s.sensitivity));
+  const keep = $("#cl-keep");
+  if (![...keep.options].some((o) => Number(o.value) === s.keepDays)) keep.add(new Option(s.keepDays + " days", s.keepDays));
+  keep.value = String(s.keepDays);
+  if (j.disk) $("#cl-disk").textContent = `${fmtBytes(j.disk.free)} free on the Pi · oldest clips go first when it's nearly full`;
+
+  const days = j.days.map((d) => d.day);
+  $("#cl-day").textContent = dayLabel(clipsUI.day);
+  $("#cl-count").textContent = j.clips.length ? `${j.clips.length} clip${j.clips.length === 1 ? "" : "s"} · ${fmtDur(j.clips.reduce((a, c) => a + c.duration, 0))}` : "No motion";
+  // arrows jump to the nearest day that has clips (or today)
+  $("#cl-prev").disabled = !days.some((d) => d < clipsUI.day);
+  $("#cl-next").disabled = clipsUI.day >= localDay();
+  $("#cl-today").hidden = clipsUI.day === localDay();
+}
+
+function renderTimeline(j) {
+  const track = $("#cl-track");
+  const [Y, M, D] = clipsUI.day.split("-").map(Number);
+  const t0 = new Date(Y, M - 1, D).getTime(), span = 864e5;
+  track.innerHTML = "";
+  for (const c of j.clips) {
+    const b = document.createElement("button");
+    b.className = "cl-mark";
+    b.dataset.id = c.id;
+    b.style.left = (100 * (c.start - t0)) / span + "%";
+    b.style.width = `max(3px, ${(100 * (c.end - c.start)) / span}%)`;
+    b.style.setProperty("--h", Math.max(0.3, Math.min(1, 0.3 + c.peak * 4)));
+    b.title = clipTime(c.start) + " · " + fmtDur(c.duration);
+    b.setAttribute("role", "option");
+    b.addEventListener("click", () => selectClip(c));
+    track.append(b);
+  }
+  if (clipsUI.day === localDay()) {
+    const now = document.createElement("i");
+    now.className = "cl-now";
+    now.style.left = (100 * (Date.now() - t0)) / span + "%";
+    track.append(now);
+  }
+  if (!j.clips.length) track.insertAdjacentHTML("beforeend", '<span class="cl-empty">Nothing moved in front of the camera this day</span>');
+  const hours = $("#cl-hours");
+  if (!hours.children.length) hours.innerHTML = [0, 3, 6, 9, 12, 15, 18, 21, 24].map((h) => `<span style="left:${(h / 24) * 100}%">${pad2(h % 24 === 0 && h ? 24 : h)}</span>`).join("");
+}
+
+// a click on the bare track picks the clip nearest that time
+$("#cl-timeline").addEventListener("click", (e) => {
+  if (e.target.closest(".cl-mark") || !clipsUI.data || !clipsUI.data.clips.length) return;
+  const r = $("#cl-track").getBoundingClientRect();
+  const [Y, M, D] = clipsUI.day.split("-").map(Number);
+  const t = new Date(Y, M - 1, D).getTime() + ((e.clientX - r.left) / r.width) * 864e5;
+  const near = clipsUI.data.clips.reduce((a, c) => (Math.abs(c.start - t) < Math.abs(a.start - t) ? c : a));
+  selectClip(near);
+});
+
+function renderClipGrid(j) {
+  const grid = $("#cl-grid");
+  grid.innerHTML = "";
+  [...j.clips].reverse().forEach((c) => {
+    const b = document.createElement("button");
+    b.className = "cl-card";
+    b.dataset.id = c.id;
+    b.innerHTML = `<span class="cl-thumb"></span><span class="cl-card-txt"><b></b><small></small></span>`;
+    const th = $(".cl-thumb", b);
+    if (c.thumb) th.style.backgroundImage = `url("${state.demo ? c.thumbURL : mediaURL(c.id, "jpg")}")`;
+    $("b", b).textContent = clipTime(c.start);
+    $("small", b).textContent = fmtDur(c.duration);
+    b.addEventListener("click", () => selectClip(c));
+    grid.append(b);
+  });
+}
+
+function markSelected() {
+  const id = clipsUI.sel && clipsUI.sel.id;
+  $$("#cl-track .cl-mark, #cl-grid .cl-card").forEach((el) => el.classList.toggle("on", el.dataset.id === id));
+}
+
+function selectClip(c, play = true) {
+  clipsUI.sel = c;
+  markSelected();
+  const v = $("#cl-video");
+  $("#cl-player").hidden = false;
+  if (state.demo) {
+    v.removeAttribute("src"); v.poster = c.thumbURL; v.load();
+  } else {
+    v.poster = c.thumb ? mediaURL(c.id, "jpg") : "";
+    v.src = mediaURL(c.id, "mp4");
+    if (play) v.play().catch(() => {});
+  }
+  $("#cl-time").textContent = clipTime(c.start);
+  $("#cl-meta").textContent = [fmtDur(c.duration), c.width ? c.width + "×" + c.height : "", c.size ? fmtBytes(c.size) : "", state.demo ? "demo — no video" : ""].filter(Boolean).join(" · ");
+  const dl = $("#cl-download");
+  dl.href = mediaURL(c.id, "mp4");
+  dl.setAttribute("download", "camera-" + c.id.replace("/", "-") + ".mp4");
+  dl.hidden = state.demo;
+  const list = clipsUI.data.clips, i = list.findIndex((x) => x.id === c.id);
+  $("#cl-older").disabled = i <= 0;
+  $("#cl-newer").disabled = i < 0 || i >= list.length - 1;
+  resetDelete();
+}
+
+function stepClip(d) {
+  const list = clipsUI.data.clips, i = list.findIndex((x) => x.id === clipsUI.sel.id);
+  if (list[i + d]) selectClip(list[i + d]);
+}
+$("#cl-older").addEventListener("click", () => stepClip(-1));
+$("#cl-newer").addEventListener("click", () => stepClip(1));
+// keep playing: when a clip ends, go on to the next one
+$("#cl-video").addEventListener("ended", () => { if (clipsUI.sel && !$("#cl-newer").disabled) stepClip(1); });
+
+// delete asks once: the first press arms it for a few seconds
+let delTimer = null;
+function resetDelete() {
+  clearTimeout(delTimer);
+  const b = $("#cl-delete");
+  b.classList.remove("armed");
+  $(".material-symbols-outlined", b).textContent = "delete";
+  b.title = "Delete clip";
+}
+$("#cl-delete").addEventListener("click", async () => {
+  const b = $("#cl-delete");
+  if (!b.classList.contains("armed")) {
+    b.classList.add("armed");
+    $(".material-symbols-outlined", b).textContent = "delete_forever";
+    b.title = "Press again to delete";
+    toast("Press delete again to remove this clip");
+    delTimer = setTimeout(resetDelete, 3500);
+    return;
+  }
+  resetDelete();
+  const c = clipsUI.sel;
+  try {
+    await clipsApi("/api/clips/delete", { ids: [c.id] });
+    const list = clipsUI.data.clips, i = list.findIndex((x) => x.id === c.id);
+    const next = list[i + 1] || list[i - 1];
+    clipsUI.sel = null;
+    $("#cl-video").removeAttribute("src");
+    $("#cl-player").hidden = true;
+    await loadClips(false);
+    if (next) selectClip(clipsUI.data.clips.find((x) => x.id === next.id) || clipsUI.data.clips[0], false);
+    toast("Clip deleted", "ok");
+  } catch (e) { toast("Couldn't delete: " + e.message, "bad"); }
+});
+
+async function goDay(day) {
+  clipsUI.day = day;
+  clipsUI.sel = null;
+  $("#cl-video").pause();
+  $("#cl-player").hidden = true;
+  await loadClips();
+}
+$("#cl-prev").addEventListener("click", () => {
+  const earlier = clipsUI.data.days.map((d) => d.day).filter((d) => d < clipsUI.day);
+  if (earlier.length) goDay(earlier[0]); // days are newest first
+});
+$("#cl-next").addEventListener("click", () => {
+  const later = clipsUI.data.days.map((d) => d.day).filter((d) => d > clipsUI.day && d <= localDay());
+  goDay(later.length ? later[later.length - 1] : localDay());
+});
+$("#cl-today").addEventListener("click", () => goDay(localDay()));
+
+// settings
+$("#cl-settings-btn").addEventListener("click", async () => {
+  const p = $("#cl-settings"), btn = $("#cl-settings-btn");
+  const open = p.hidden;
+  btn.classList.toggle("on", open);
+  btn.setAttribute("aria-expanded", open);
+  if (open) { p.hidden = false; await animate(p, [{ opacity: 0, transform: "translateY(-4px)" }, { opacity: 1, transform: "none" }], { duration: 200, easing: EASE_OUT }); }
+  else { await animate(p, [{ opacity: 1 }, { opacity: 0 }], { duration: 120, easing: EASE_IN }); p.hidden = true; }
+  p.getAnimations().forEach((a) => a.cancel());
+});
+async function saveClipSettings(patch) {
+  try {
+    const j = await clipsApi("/api/clips/settings", patch);
+    clipsUI.data = { ...clipsUI.data, ...j };
+    renderClipsState(clipsUI.data);
+    toast(patch.enabled === false ? "Motion recording off" : patch.enabled ? "Motion recording on" : "Saved", "ok");
+  } catch (e) { toast("Couldn't save: " + e.message, "bad"); loadClips(true); }
+}
+$("#cl-enabled").addEventListener("change", (e) => saveClipSettings({ enabled: e.target.checked }));
+$("#cl-sens").addEventListener("click", (e) => { const b = e.target.closest("button"); if (b) saveClipSettings({ sensitivity: b.dataset.v }); });
+$("#cl-keep").addEventListener("change", (e) => saveClipSettings({ keepDays: Number(e.target.value) }));
+
+// demo: a believable day of clips with drawn thumbnails (no video)
+function demoClipsApi(path, body) {
+  if (!clipsUI.demo) {
+    const mk = (hh, mm, dur, peak, tint) => {
+      const d = new Date(); d.setHours(hh, mm, Math.floor(Math.random() * 60), 0);
+      const c = document.createElement("canvas"); c.width = 320; c.height = 180;
+      const g = c.getContext("2d");
+      const grd = g.createLinearGradient(0, 0, 0, 180); grd.addColorStop(0, tint); grd.addColorStop(1, "#0d0b09");
+      g.fillStyle = grd; g.fillRect(0, 0, 320, 180);
+      g.fillStyle = "rgba(236,232,223,.08)"; g.fillRect(0, 120, 320, 60);
+      g.fillStyle = "rgba(199,114,254,.55)"; g.fillRect(60 + Math.random() * 180, 70, 26, 60);
+      return { id: localDay() + "/" + pad2(hh) + pad2(mm) + "00", start: d.getTime(), end: d.getTime() + dur * 1000, duration: dur, peak, width: 1280, height: 720, size: dur * 9e5, thumb: true, thumbURL: c.toDataURL("image/jpeg", 0.7) };
+    };
+    const now = new Date().getHours();
+    const clips = [[6, 42, 14, 0.04, "#2a2f3a"], [7, 15, 31, 0.09, "#3a3a34"], [8, 3, 9, 0.02, "#4a4436"], [12, 27, 64, 0.12, "#5a5242"], [12, 40, 12, 0.03, "#5a5242"],
+      [15, 8, 22, 0.06, "#4d4638"], [17, 55, 45, 0.1, "#3d3628"], [19, 31, 18, 0.05, "#2a241c"], [22, 12, 11, 1, "#14110d"]]
+      .filter(([h]) => h <= now).map((a) => mk(...a));
+    clipsUI.demo = { state: "watching", settings: { enabled: true, sensitivity: "medium", keepDays: 14, maxGB: 0 }, disk: { free: 41e9, total: 62e9 }, clips };
+  }
+  const d = clipsUI.demo;
+  if (path.startsWith("/api/clips/settings")) { Object.assign(d.settings, body); d.state = d.settings.enabled ? "watching" : "off"; }
+  if (path.startsWith("/api/clips/delete")) d.clips = d.clips.filter((c) => !body.ids.includes(c.id));
+  const day = (/day=([\d-]+)/.exec(path) || [])[1] || null;
+  return Promise.resolve({ state: d.state, settings: d.settings, disk: d.disk, days: d.clips.length ? [{ day: localDay(), count: d.clips.length }] : [], day, clips: day === localDay() ? d.clips : [] });
 }
 
 // ---------------- session ----------------
