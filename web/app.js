@@ -12,7 +12,7 @@ const store = {
   del(k) { try { localStorage.removeItem("mr:" + k); } catch {} },
 };
 
-const prefs = Object.assign({ invertScroll: false, autoHide: true, reduceMotion: false }, store.get("prefs", {}));
+const prefs = Object.assign({ invertScroll: false, autoHide: true, reduceMotion: false, toolbarPos: "top" }, store.get("prefs", {}));
 const savePrefs = () => store.set("prefs", prefs);
 
 // ---------------- motion ----------------
@@ -37,9 +37,10 @@ const motions = {
     outOpts: { duration: 160, easing: EASE_IN },
   },
   pop: {
-    in: [{ opacity: 0, transform: "translate(-50%, -6px)" }, { opacity: 1, transform: "translate(-50%, 0)" }],
+    // menus are placed with the CSS `translate` property (it depends on the toolbar position)
+    in: [{ opacity: 0, transform: "scale(.97)" }, { opacity: 1, transform: "none" }],
     inOpts: { duration: 200, easing: EASE_OUT },
-    out: [{ opacity: 1, transform: "translate(-50%, 0)" }, { opacity: 0, transform: "translate(-50%, -4px)" }],
+    out: [{ opacity: 1, transform: "none" }, { opacity: 0, transform: "scale(.98)" }],
     outOpts: { duration: 120, easing: EASE_IN },
   },
   drawer: {
@@ -864,7 +865,8 @@ async function startSession(host, card) {
   const anim = from
     ? animate(sessEl, [{ clipPath: from, opacity: 0.6 }, { clipPath: "inset(0px 0px 0px 0px)", opacity: 1 }], { duration: 480, easing: EASE_OUT })
     : animate(sessEl, [{ opacity: 0, transform: "scale(1.04)" }, { opacity: 1, transform: "none" }], { duration: 450, easing: EASE_OUT });
-  animate($("#toolbar"), [{ opacity: 0, transform: "translate(-50%, -16px)" }, { opacity: 1, transform: "translate(-50%, 0)" }], { duration: 300, delay: 280, easing: EASE_OUT })
+  const tbFrom = { top: "translateY(-16px)", bottom: "translateY(16px)", left: "translateX(-16px)", right: "translateX(16px)" }[prefs.toolbarPos];
+  animate($("#toolbar"), [{ opacity: 0, transform: tbFrom }, { opacity: 1, transform: "none" }], { duration: 300, delay: 280, easing: EASE_OUT })
     .then((a) => a.cancel());
   showToolbar();
   session.start();
@@ -1340,7 +1342,22 @@ function showToolbar() {
     $("#toolbar").classList.add("tucked");
   }, 2600);
 }
-sessEl.addEventListener("pointermove", (e) => { if (e.clientY < 70) showToolbar(); });
+sessEl.addEventListener("pointermove", (e) => {
+  const r = sessEl.getBoundingClientRect(), edge = 70;
+  const near = {
+    top: e.clientY - r.top < edge,
+    bottom: r.bottom - e.clientY < edge,
+    left: e.clientX - r.left < edge,
+    right: r.right - e.clientX < edge,
+  }[prefs.toolbarPos];
+  if (near) showToolbar();
+});
+// Settings: Toolbar position, top (default), bottom, left or right edge
+function applyToolbarPos() {
+  if (!["top", "bottom", "left", "right"].includes(prefs.toolbarPos)) prefs.toolbarPos = "top";
+  sessEl.dataset.tb = prefs.toolbarPos;
+}
+applyToolbarPos();
 $("#toolbar").addEventListener("pointerenter", showToolbar);
 $("#toolbar-handle").addEventListener("pointerenter", showToolbar);
 
@@ -1438,6 +1455,9 @@ function initSettings() {
   };
   bind("set-scroll-invert", "invertScroll");
   bind("set-autohide", "autoHide", showToolbar);
+  const pos = $("#set-tbpos");
+  pos.value = prefs.toolbarPos;
+  pos.addEventListener("change", () => { prefs.toolbarPos = pos.value; savePrefs(); applyToolbarPos(); showToolbar(); });
   bind("set-motion", "reduceMotion", () => document.documentElement.classList.toggle("reduce-motion", prefs.reduceMotion));
   document.documentElement.classList.toggle("reduce-motion", prefs.reduceMotion);
 }
