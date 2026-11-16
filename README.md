@@ -89,6 +89,8 @@ Restart the agent; it should log `virtual screen driver found`. When monitors gi
 
 **Multiple monitors:** in a session, the screen button in the toolbar lists every monitor plus **All screens** (all of them stitched together the way they're arranged on your desk). The website remembers your choice per PC. To pick the starting screen on the agent side, set `"monitor": 1` (second screen) or `"monitor": -1` (all screens).
 
+*Only one screen showing?* The screen button only appears when the agent finds two or more. Check that Windows **extends** the desktop (**Win + P → Extend**; *Duplicate* or *PC screen only* leaves one screen), then restart the agent and look at its `found Screen N` log lines. Monitors plugged into different graphics outputs (one in the motherboard, one in the graphics card) are found too: the one on the second GPU is captured with GDI, which works but uses a bit more CPU. For the fastest capture, plug all monitors into the same GPU.
+
 Other flags: `-test` streams a test pattern (two fake screens) and only logs input.
 
 ### Add the Raspberry Pi itself
@@ -174,6 +176,6 @@ Since the site is now public, use a long password. Login attempts are rate-limit
 
 - [ ] Tray icon on the host with a "someone is connected" indicator
 - [ ] Clipboard sync
-- [ ] Multi-monitor switching from the toolbar
+- [x] Multi-monitor switching from the toolbar
 - [ ] Run as a Windows service (control the login screen / UAC)
 - [ ] File transfer

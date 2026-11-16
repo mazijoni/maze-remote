@@ -1063,7 +1063,11 @@ func main() {
 		log.Printf("virtual screen driver not installed — the PC can't be shown while its monitors sleep (see README)")
 	}
 	for _, sc := range a.screens {
-		log.Printf("found %s: %dx%d at (%d,%d), rotation %d°", sc.Name, sc.W, sc.H, sc.X, sc.Y, sc.Rotation)
+		how := "Desktop Duplication"
+		if sc.GDI {
+			how = "GDI (it's on another graphics card)"
+		}
+		log.Printf("found %s: %dx%d at (%d,%d), rotation %d°, captured with %s", sc.Name, sc.W, sc.H, sc.X, sc.Y, sc.Rotation, how)
 	}
 	log.Printf("Maze Remote agent %s — %s (%s), encoder %s, %d fps", version, cfg.Name, runtime.GOOS, cfg.Encoder, cfg.FPS)
 	if cfg.Test {

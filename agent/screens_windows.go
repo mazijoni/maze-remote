@@ -50,6 +50,33 @@ func comCall(obj *comObj, slot int, args ...uintptr) uintptr {
 	return r
 }
 
+// dxgiOutputs returns the attached outputs of one adapter, or ok=false when
+// the adapter doesn't exist.
+func dxgiOutputs(factory *comObj, ai int) (out []dxgiOutputDesc, idx []int, ok bool) {
+	var adapter *comObj
+	if hr := comCall(factory, vtEnumAdapters, uintptr(ai), uintptr(unsafe.Pointer(&adapter))); hr != 0 || adapter == nil {
+		return nil, nil, false
+	}
+	defer comCall(adapter, vtRelease)
+	for i := 0; i < 16; i++ {
+		var output *comObj
+		hr := comCall(adapter, vtEnumOutputs, uintptr(i), uintptr(unsafe.Pointer(&output)))
+		if uint32(hr) == dxgiNotFound || output == nil {
+			break
+		}
+		var d dxgiOutputDesc
+		comCall(output, vtOutputGetDsc, uintptr(unsafe.Pointer(&d)))
+		comCall(output, vtRelease)
+		if d.Attached != 0 {
+			out, idx = append(out, d), append(idx, i)
+		}
+	}
+	return out, idx, true
+}
+
+// listScreensDXGI lists the outputs of every GPU. Outputs of the default GPU
+// are captured with ddagrab (Index = output_idx, as before); outputs of other
+// GPUs get the next free Index and are captured with gdigrab.
 func listScreensDXGI() (out []Screen, err error) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -65,35 +92,50 @@ func listScreensDXGI() (out []Screen, err error) {
 	}
 	defer comCall(factory, vtRelease)
 
-	var adapter *comObj
-	if hr := comCall(factory, vtEnumAdapters, 0, uintptr(unsafe.Pointer(&adapter))); hr != 0 || adapter == nil {
-		return nil, fmt.Errorf("EnumAdapters failed: 0x%x", hr)
-	}
-	defer comCall(adapter, vtRelease)
-
-	for i := 0; i < 16; i++ {
-		var output *comObj
-		hr := comCall(adapter, vtEnumOutputs, uintptr(i), uintptr(unsafe.Pointer(&output)))
-		if uint32(hr) == dxgiNotFound || output == nil {
+	next := 0
+	for ai := 0; ai < 8; ai++ {
+		descs, idx, ok := dxgiOutputs(factory, ai)
+		if !ok {
+			if ai == 0 {
+				return nil, fmt.Errorf("EnumAdapters failed")
+			}
 			break
 		}
-		var d dxgiOutputDesc
-		comCall(output, vtOutputGetDsc, uintptr(unsafe.Pointer(&d)))
-		comCall(output, vtRelease)
-		if d.Attached == 0 {
-			continue
+		for k, d := range descs {
+			s := Screen{
+				X: int(d.Desktop.Left), Y: int(d.Desktop.Top),
+				W: int(d.Desktop.Right - d.Desktop.Left), H: int(d.Desktop.Bottom - d.Desktop.Top),
+			}
+			if hasRect(out, s) {
+				continue
+			}
+			if ai == 0 {
+				s.Index, s.Output = idx[k], idx[k]
+				// DXGI_MODE_ROTATION: 1 identity, 2 = 90°, 3 = 180°, 4 = 270°
+				s.Rotation = map[uint32]int{2: 90, 3: 180, 4: 270}[d.Rotation]
+			} else {
+				s.GDI = true // gdigrab grabs the desktop already upright
+			}
+			s.Primary = s.X == 0 && s.Y == 0
+			out = append(out, s)
+			next = max(next, s.Index+1)
 		}
-		s := Screen{
-			Index: i,
-			X:     int(d.Desktop.Left), Y: int(d.Desktop.Top),
-			W: int(d.Desktop.Right - d.Desktop.Left), H: int(d.Desktop.Bottom - d.Desktop.Top),
+	}
+	for i := range out {
+		if out[i].GDI {
+			out[i].Index, next = next, next+1
 		}
-		s.Primary = s.X == 0 && s.Y == 0
-		// DXGI_MODE_ROTATION: 1 identity, 2 = 90°, 3 = 180°, 4 = 270°
-		s.Rotation = map[uint32]int{2: 90, 3: 180, 4: 270}[d.Rotation]
-		out = append(out, s)
 	}
 	return out, nil
+}
+
+func hasRect(ss []Screen, s Screen) bool {
+	for _, o := range ss {
+		if o.X == s.X && o.Y == s.Y && o.W == s.W && o.H == s.H {
+			return true
+		}
+	}
+	return false
 }
 
 // Desktop Duplication hands over a rotated monitor's image in the panel's
@@ -107,6 +149,9 @@ var (
 )
 
 func fixFor(ffmpeg string, s Screen) string {
+	if s.GDI {
+		return ""
+	}
 	switch s.Rotation {
 	case 180:
 		return "hflip,vflip"
@@ -130,7 +175,7 @@ func fixFor(ffmpeg string, s Screen) string {
 	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, ffmpeg, "-hide_banner", "-f", "lavfi", "-i",
-		fmt.Sprintf("ddagrab=output_idx=%d:framerate=5", s.Index), "-frames:v", "1", "-f", "null", "-")
+		fmt.Sprintf("ddagrab=output_idx=%d:framerate=5", s.Output), "-frames:v", "1", "-f", "null", "-")
 	hideWindow(cmd)
 	out, _ := cmd.CombinedOutput()
 	if m := sizeRe.FindSubmatch(out); m != nil {
@@ -150,9 +195,26 @@ func fixFor(ffmpeg string, s Screen) string {
 
 func listScreens(ffmpeg string) []Screen {
 	ss, err := listScreensDXGI()
-	if err != nil || len(ss) == 0 {
+	if err != nil {
+		log.Printf("listing screens via DXGI failed (%v), using the Windows monitor list", err)
+	}
+	if len(ss) == 0 {
 		for i, r := range monitors() {
-			ss = append(ss, Screen{Index: i, X: int(r.Left), Y: int(r.Top), W: int(r.Right - r.Left), H: int(r.Bottom - r.Top), Primary: r.Left == 0 && r.Top == 0})
+			ss = append(ss, Screen{Index: i, Output: i, X: int(r.Left), Y: int(r.Top), W: int(r.Right - r.Left), H: int(r.Bottom - r.Top), Primary: r.Left == 0 && r.Top == 0})
+		}
+	} else {
+		// anything Windows shows that DXGI didn't (odd drivers, DisplayLink…)
+		next := 0
+		for _, s := range ss {
+			next = max(next, s.Index+1)
+		}
+		for _, r := range monitors() {
+			s := Screen{X: int(r.Left), Y: int(r.Top), W: int(r.Right - r.Left), H: int(r.Bottom - r.Top), GDI: true}
+			if s.W > 0 && s.H > 0 && !hasRect(ss, s) {
+				s.Index, s.Primary = next, s.X == 0 && s.Y == 0
+				next++
+				ss = append(ss, s)
+			}
 		}
 	}
 	for i := range ss {

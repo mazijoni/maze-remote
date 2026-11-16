@@ -53,8 +53,11 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 				w, h := nativeSize(sc)
 				args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, w, h, fps))
 				graph += fmt.Sprintf("[%d:v]%sformat=yuv420p[s%d];", i, withComma(sc.Fix), i)
+			case runtime.GOOS == "windows" && sc.GDI:
+				args = append(args, gdigrabArgs(sc, fps, es.mouse())...)
+				graph += fmt.Sprintf("[%d:v]format=yuv420p[s%d];", i, i)
 			case runtime.GOOS == "windows":
-				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=%d", sc.Index, fps, es.mouse()))
+				args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=%d", sc.Output, fps, es.mouse()))
 				graph += fmt.Sprintf("[%d:v]hwdownload,format=bgra,%sformat=yuv420p[s%d];", i, withComma(sc.Fix), i)
 			}
 			stack += fmt.Sprintf("[s%d]", i)
@@ -81,9 +84,12 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 		src := []string{"testsrc2", "smptebars"}[sc.Index%2]
 		w, h := nativeSize(sc)
 		args = append(args, "-re", "-f", "lavfi", "-i", fmt.Sprintf("%s=size=%dx%d:rate=%s", src, w, h, fps))
+	case runtime.GOOS == "windows" && sc.GDI:
+		// monitor on another GPU: ddagrab can't reach it, GDI can
+		args = append(args, gdigrabArgs(sc, fps, es.mouse())...)
 	case runtime.GOOS == "windows":
 		// Desktop Duplication API — fast, low-overhead, needs ffmpeg 6.0+
-		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=%d", sc.Index, fps, es.mouse()))
+		args = append(args, "-f", "lavfi", "-i", fmt.Sprintf("ddagrab=output_idx=%d:framerate=%s:draw_mouse=%d", sc.Output, fps, es.mouse()))
 		hw = (cfg.Encoder == "nvenc" || cfg.Encoder == "amf") && sc.W <= maxW && sc.H <= maxH && sc.Fix == ""
 	case runtime.GOOS == "darwin":
 		args = append(args, "-f", "avfoundation", "-framerate", fps, "-capture_cursor", fmt.Sprint(es.mouse()), "-i", fmt.Sprintf("%d:none", sc.Index+1))
@@ -96,12 +102,20 @@ func ffmpegArgs(cfg Config, ss []Screen, sel int, es encodeSettings) []string {
 		args = append(args, "-vf", "select=0")
 		return append(args, encoderArgs(cfg, es, gop)...)
 	}
-	if runtime.GOOS == "windows" && !cfg.Test && !hw {
+	if runtime.GOOS == "windows" && !cfg.Test && !hw && !sc.GDI {
 		args = append(args, "-vf", "hwdownload,format=bgra,"+withComma(sc.Fix)+fitScale+",format=yuv420p")
 	} else if !hw {
 		args = append(args, "-vf", withComma(sc.Fix)+fitScale+",format=yuv420p")
 	}
 	return append(args, encoderArgs(cfg, es, gop)...)
+}
+
+// gdigrabArgs captures one monitor by its rectangle on the virtual desktop
+// (offsets are relative to the main monitor, so they can be negative).
+func gdigrabArgs(sc Screen, fps string, mouse int) []string {
+	return []string{"-f", "gdigrab", "-framerate", fps, "-draw_mouse", fmt.Sprint(mouse),
+		"-offset_x", fmt.Sprint(sc.X), "-offset_y", fmt.Sprint(sc.Y),
+		"-video_size", fmt.Sprintf("%dx%d", sc.W, sc.H), "-i", "desktop"}
 }
 
 // nativeSize is the frame size before rotation (what a sideways capture gives).
