@@ -205,7 +205,7 @@
       <ul class="tips">
         <li>Click the screen to start sending your keyboard.</li>
         <li>Fullscreen captures system keys like <kbd>Alt</kbd>+<kbd>Tab</kbd> (Chrome / Edge).</li>
-        <li>Move to the top edge to bring the toolbar back.</li>
+        <li>Move to the toolbar's edge to bring it back (you can put it on any edge in Settings).</li>
       </ul>
     </aside>
   </section>
@@ -317,7 +317,7 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
           <dd>Some networks block new or remote-access sites ("Non-existent domain"). Use mobile data instead, or ask that network's IT.</dd>
 
           <dt><span class="material-symbols-outlined">mouse</span>Mouse &amp; keyboard tips</dt>
-          <dd>Your pointer is drawn locally so it's instant. Click the screen to send your keyboard. <span class="material-symbols-outlined inline">fullscreen</span> Fullscreen also captures <kbd>Alt</kbd>+<kbd>Tab</kbd> and the Windows key; <span class="material-symbols-outlined inline">keyboard</span> sends shortcuts like Task Manager. Move to the top edge to bring the toolbar back.</dd>
+          <dd>Your pointer is drawn locally so it's instant. Click the screen to send your keyboard. <span class="material-symbols-outlined inline">fullscreen</span> Fullscreen also captures <kbd>Alt</kbd>+<kbd>Tab</kbd> and the Windows key; <span class="material-symbols-outlined inline">keyboard</span> sends shortcuts like Task Manager. Move to the toolbar's edge to bring it back; pick top, bottom, left or right in Settings.</dd>
 
           <dt><span class="material-symbols-outlined">desktop_windows</span>Several monitors</dt>
           <dd>Use the screen button in the toolbar to switch monitor or show <b>All screens</b>. Your choice is remembered per PC.</dd>
@@ -430,6 +430,7 @@ tail ~/maze-remote-agent/agent.log            # the Pi's own agent</pre><button 
       <div class="settings">
         <label class="settings-row"><span>Invert scroll direction</span><input type="checkbox" id="set-scroll-invert" class="switch"></label>
         <label class="settings-row"><span>Auto-hide session toolbar</span><input type="checkbox" id="set-autohide" class="switch" checked></label>
+        <label class="settings-row"><span>Toolbar position</span><select id="set-tbpos" class="cl-select"><option value="top">Top</option><option value="bottom">Bottom</option><option value="left">Left</option><option value="right">Right</option></select></label>
         <label class="settings-row"><span>Reduce animations</span><input type="checkbox" id="set-motion" class="switch"></label>
         <div class="settings-row"><span>Server</span><code id="set-server">—</code></div>
       </div>
