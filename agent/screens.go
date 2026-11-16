@@ -16,6 +16,12 @@ type Screen struct {
 	// Fix is the ffmpeg filter that turns this screen's captured frames
 	// upright ("" when they already are).
 	Fix string `json:"-"`
+	// Output is the ddagrab output_idx (an output of the default GPU).
+	Output int `json:"-"`
+	// GDI: the monitor hangs off another GPU (e.g. one cable in the
+	// motherboard, one in the graphics card), which ddagrab can't reach, so
+	// it's captured with gdigrab by its desktop rectangle instead.
+	GDI bool `json:"-"`
 }
 
 // AllScreens selects every monitor stitched into one picture.
